@@ -27,7 +27,20 @@ forwards the original on any compression failure, Redactly refuses.
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import AsyncIterator, Mapping, Sequence
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
+
+from . import config as _config
+from .adapters import ADAPTERS
+from .adapters.base import Adapter
 from .config import Config
+from .engine import Redactor
+from .vault import Vault, _current_vault, set_current_vault
 
 # Hop-by-hop headers (RFC 7230 §6.1) plus ``host`` / ``content-length``. These
 # are connection-scoped and must NOT be forwarded to the upstream; httpx sets
@@ -51,8 +64,22 @@ HOP_BY_HOP_HEADERS: frozenset[str] = frozenset(
     }
 )
 
+# Response headers that describe the upstream's *transport framing* and must NOT
+# be copied onto our StreamingResponse: httpx has already decoded the body, and
+# Starlette frames its own length/encoding. Copying these would mis-declare the
+# (now un-masked, re-length-shifted) body to the client.
+_RESPONSE_DROP_HEADERS: frozenset[str] = frozenset(
+    {
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+    }
+)
 
-def filter_upstream_headers(headers: dict[str, str]) -> dict[str, str]:
+
+def filter_upstream_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Return a copy of ``headers`` safe to forward upstream.
 
     Strips hop-by-hop + ``host`` + ``content-length`` + ``accept-encoding``
@@ -60,12 +87,72 @@ def filter_upstream_headers(headers: dict[str, str]) -> dict[str, str]:
     auth headers — **verbatim**. Adds NOTHING (no ``x-redactly-*``, no proxy
     fingerprint): the proxy must be invisible to the provider.
 
-    TODO(scaffold): implement case-insensitive filtering.
+    Filtering is case-insensitive (HTTP header names are case-insensitive); the
+    original casing of forwarded headers is preserved so the wire bytes match
+    what the tool sent (subscription stealth).
     """
-    raise NotImplementedError("proxy.filter_upstream_headers is not yet implemented")
+    out: dict[str, str] = {}
+    for name, value in headers.items():
+        if name.lower() in HOP_BY_HOP_HEADERS:
+            continue
+        out[name] = value
+    return out
 
 
-def create_app(config: Config | None = None):  # -> fastapi.FastAPI
+def _filter_response_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Strip transport-framing headers from the upstream response.
+
+    The body we hand back has been decoded by httpx and re-framed by Starlette
+    (and its length changed by un-masking), so the upstream's
+    ``content-length`` / ``content-encoding`` / ``transfer-encoding`` no longer
+    describe it. Everything else (rate-limit headers, ``content-type``, …) is
+    passed through so the client sees a transparent reply.
+    """
+    out: dict[str, str] = {}
+    for name, value in headers.items():
+        if name.lower() in _RESPONSE_DROP_HEADERS:
+            continue
+        out[name] = value
+    return out
+
+
+def _blocked(reason: str, *, status_code: int = 502) -> JSONResponse:
+    """Build the fail-closed block response — 5xx, forwards NOTHING.
+
+    Returned whenever the proxy cannot guarantee the body was redacted: no
+    adapter matched the path, or ``redact_request`` raised. The original body
+    never reaches the wire.
+    """
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "type": "redactly_blocked",
+                "message": reason,
+            }
+        },
+    )
+
+
+def _pick_adapter(
+    adapters: Sequence[Adapter], path: str, headers: Mapping[str, str]
+) -> Adapter | None:
+    """Return the first adapter whose ``matches`` is True, else ``None``.
+
+    Registry order is match priority. ``None`` (no match) is a fail-closed
+    condition handled by the caller — there is no passthrough default.
+    """
+    for adapter in adapters:
+        if adapter.matches(path, headers):
+            return adapter
+    return None
+
+
+def create_app(
+    config: Config | None = None,
+    *,
+    adapters: Sequence[Adapter] | None = None,
+) -> FastAPI:
     """Build and return the FastAPI app for the Redactly proxy.
 
     Wires:
@@ -78,8 +165,137 @@ def create_app(config: Config | None = None):  # -> fastapi.FastAPI
 
     ``config`` defaults to :func:`redactly.config.load`. The upstream comes from
     ``config.upstream`` (``REDACT_UPSTREAM``) so tests can point it at a mock.
-
-    TODO(scaffold): construct FastAPI app, register routes, build the per-request
-    vault + redactor, and forward with httpx.
+    ``adapters`` defaults to the built-in registry; tests may inject their own.
     """
-    raise NotImplementedError("proxy.create_app is not yet implemented")
+    cfg = config if config is not None else _config.load()
+    registry: Sequence[Adapter] = adapters if adapters is not None else ADAPTERS
+    upstream = cfg.upstream.rstrip("/")
+
+    app = FastAPI(title="Redactly", version="0.0.1")
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        """Liveness probe — does NOT go through the redaction pipeline."""
+        return JSONResponse({"status": "ok", "upstream": upstream})
+
+    @app.post("/{full_path:path}")
+    async def proxy(full_path: str, request: Request):
+        # --- 1. Buffer the entire body (default-DENY: inspect everything). ---
+        body = await request.body()
+        # Reconstruct the path-with-leading-slash + query so adapters and the
+        # upstream URL see exactly what the tool requested.
+        path = request.url.path
+        headers = dict(request.headers)
+
+        # --- 2. Pick an adapter; no match is a fail-closed block. ---
+        adapter = _pick_adapter(registry, path, headers)
+        if adapter is None:
+            return _blocked(
+                f"no adapter matched path {path!r}; refusing to forward "
+                "un-inspectable request (fail-closed)"
+            )
+
+        # --- 3. Build a per-request vault + redactor, then redact. ---
+        #
+        # The vault is session-scoped; one request = one session here. It is
+        # in-memory unless ``config.vault_path`` is set. A redactor is built
+        # over it with the configured user rules + allowlist.
+        session_id = uuid.uuid4().hex
+        vault = Vault(session_id, path=cfg.vault_path)
+        redactor = Redactor(
+            vault,
+            user_rules=cfg.user_rules,
+            allowlist=cfg.allowlist,
+        )
+
+        try:
+            redacted_body = adapter.redact_request(body, redactor)
+        except Exception as exc:  # noqa: BLE001 — fail-closed on ANY redactor error
+            # The original body NEVER reaches the wire. Block with 5xx.
+            return _blocked(
+                f"redaction failed for path {path!r}: {type(exc).__name__}: {exc}; "
+                "forwarding nothing (fail-closed)"
+            )
+
+        # --- 4. Forward to upstream with verbatim auth + stripped hop-by-hop. ---
+        target_url = upstream + path
+        if request.url.query:
+            target_url = f"{target_url}?{request.url.query}"
+        outbound_headers = filter_upstream_headers(headers)
+
+        client = httpx.AsyncClient(timeout=None)
+        try:
+            upstream_req = client.build_request(
+                "POST",
+                target_url,
+                content=redacted_body,
+                headers=outbound_headers,
+            )
+            upstream_resp = await client.send(upstream_req, stream=True)
+        except Exception as exc:  # noqa: BLE001 — upstream unreachable
+            await client.aclose()
+            return _blocked(
+                f"upstream forward failed: {type(exc).__name__}: {exc}",
+                status_code=502,
+            )
+
+        # --- 5. Un-mask the streamed reply locally and stream it back. ---
+        #
+        # The un-masker receives ``vault`` explicitly (per the Adapter
+        # contract), so substitution does not depend on context. The ContextVar
+        # is bound as belt-and-braces for any helper that reaches for the
+        # active vault, and the upstream response + client are closed when the
+        # stream finishes or the client disconnects.
+        async def _stream() -> AsyncIterator[bytes]:
+            ctx_token = set_current_vault(vault)
+            try:
+                async for chunk in adapter.unmask_stream(
+                    upstream_resp.aiter_bytes(), vault
+                ):
+                    yield chunk
+            finally:
+                # Reset in the SAME context the token was minted in (the
+                # generator's). Resetting from a different context would raise.
+                try:
+                    _current_vault.reset(ctx_token)
+                except ValueError:  # pragma: no cover — defensive
+                    set_current_vault(None)
+
+        async def _cleanup() -> None:
+            try:
+                await upstream_resp.aclose()
+            finally:
+                await client.aclose()
+
+        response_headers = _filter_response_headers(dict(upstream_resp.headers))
+        media_type = upstream_resp.headers.get("content-type")
+
+        return StreamingResponse(
+            _stream(),
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+            media_type=media_type,
+            background=BackgroundTask(_cleanup),
+        )
+
+    return app
+
+
+def _default_app() -> FastAPI:
+    """Build the module-level ``app`` for ``uvicorn redactly.proxy:app``.
+
+    Uses :func:`redactly.config.load` (env + rules file) when available. While
+    the surrounding scaffold is still stubbed, ``config.load`` raises
+    ``NotImplementedError``; we fall back to a concrete default :class:`Config`
+    so ``app`` stays importable (the route wiring is independent of how the
+    config was sourced). Once ``config.load`` is implemented this transparently
+    uses it.
+    """
+    try:
+        return create_app()
+    except NotImplementedError:
+        return create_app(Config())
+
+
+# Module-level ASGI app for ``uvicorn redactly.proxy:app`` and the CLI.
+app = _default_app()

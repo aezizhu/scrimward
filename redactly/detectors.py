@@ -1,42 +1,29 @@
 """Secret/PII detectors and the ``Span`` type they emit.
 
-A :class:`Detector` is a named pattern with a ``token_prefix`` and an optional
-``validate`` callback (Luhn, checksum, key-prefix). Calling :func:`detect`
-returns a list of :class:`Span` — half-open ``[start, end)`` slices of the input
-text, each tagged with the detector ``name`` and token ``prefix`` plus the
-matched ``text``.
+A :class:`Detector` is a named string ``pattern`` with a ``token_prefix`` and an
+optional ``validate`` callback (Luhn, octet range, base64 decode). :func:`detect`
+compiles each pattern, runs it, drops candidates the validator rejects, and
+returns a list of :class:`Span` — half-open ``[start, end)`` slices tagged with
+the detector ``name``/``prefix`` and matched ``text``.
 
-The shared types here (``Span``, ``Detector``, ``BUILTINS``) are the vocabulary
-downstream modules (``engine``, the adapters) import — they are concrete. Only
-the detection *logic* (``detect`` and each detector's ``pattern``/``validate``)
-is stubbed.
-
-Built-in detectors are ordered **most-specific-first** so the overlap resolver
-in the engine prefers the high-confidence, narrowly-scoped match (e.g. an AWS
-key prefix wins over a generic token) when two detectors cover the same bytes.
-
-Policy (see ``docs/REDACTION-POLICY.md``): redact high-confidence *values*,
-validate numbers before masking (never versions/ports/line-numbers), and leave
-person-names to opt-in user rules rather than blanket NER.
+Built-in detectors are ordered **most-specific-first** so the engine's overlap
+resolver prefers the high-confidence, narrowly-scoped match. High precision is a
+*performance* feature too: over-masking destroys the context the model needs, so
+detectors validate before they fire (and the engine drops allowlisted matches).
+Names/order/prefixes are the contract the engine imports; the patterns are here.
 """
 
 from __future__ import annotations
 
+import base64
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class Span:
-    """A detected region of text to be replaced by a token.
-
-    Attributes:
-        start: Start offset into the source text (inclusive).
-        end: End offset into the source text (exclusive); ``text == source[start:end]``.
-        name: Name of the detector (or user rule) that produced this span.
-        prefix: Token family prefix, e.g. ``"EMAIL"`` → ``«EMAIL_<salt>_N»``.
-        text: The exact matched secret value (the literal to be tokenized).
-    """
+    """A detected region of text to be replaced by a token."""
 
     start: int
     end: int
@@ -47,17 +34,7 @@ class Span:
 
 @dataclass(frozen=True)
 class Detector:
-    """A named, validated secret/PII pattern.
-
-    Attributes:
-        name: Stable detector identifier (also the ``Span.name``).
-        pattern: Regex (as a string) located against request text.
-        token_prefix: Token family for minted tokens, e.g. ``"AWS_KEY"``.
-        validate: Optional predicate applied to a candidate match string;
-            returns ``True`` to keep the match, ``False`` to discard it
-            (e.g. Luhn for credit cards, prefix/length for keys). ``None``
-            means every regex hit is accepted.
-    """
+    """A named, validated secret/PII pattern (``pattern`` is a regex *string*)."""
 
     name: str
     pattern: str
@@ -65,48 +42,94 @@ class Detector:
     validate: Callable[[str], bool] | None = None
 
 
-# ---------------------------------------------------------------------------
-# Built-in detectors — ORDERED MOST-SPECIFIC-FIRST.
+# --- validators -----------------------------------------------------------
+
+
+def _luhn_ok(value: str) -> bool:
+    digits = [int(c) for c in value if c.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total, parity = 0, len(digits) % 2
+    for i, d in enumerate(digits):
+        if i % 2 == parity:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _ipv4_ok(value: str) -> bool:
+    parts = value.split(".")
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
+def _jwt_ok(value: str) -> bool:
+    parts = value.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        for seg in parts[:2]:
+            base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4))
+    except Exception:
+        return False
+    return True
+
+
+# --- the registry (MOST-SPECIFIC-FIRST) -----------------------------------
 #
-# The names, ordering, and token_prefix values are the contract; the regex
-# bodies and validators are stubbed (empty pattern + TODO) until implemented.
-# Most-specific (narrow, prefix/checksum-anchored) detectors come first so the
-# engine's overlap resolver prefers them over broader ones.
-# ---------------------------------------------------------------------------
+# An empty ``pattern`` means the detector is intentionally disabled (too
+# false-positive-prone without context, e.g. a bare 40-char AWS secret). detect()
+# skips empty patterns.
 BUILTINS: tuple[Detector, ...] = (
-    # --- Credentials (highest confidence: prefix/format-anchored) ---
-    Detector(name="aws_access_key", pattern="", token_prefix="AWS_KEY"),       # TODO: AKIA/ASIA prefix
-    Detector(name="aws_secret_key", pattern="", token_prefix="AWS_SECRET"),    # TODO: 40-char base64-ish
-    Detector(name="github_token", pattern="", token_prefix="GH_TOKEN"),        # TODO: ghp_/gho_/ghs_ …
-    Detector(name="openai_key", pattern="", token_prefix="OPENAI_KEY"),        # TODO: sk-… / sk-proj-…
-    Detector(name="anthropic_key", pattern="", token_prefix="ANTHROPIC_KEY"),  # TODO: sk-ant-…
-    Detector(name="slack_token", pattern="", token_prefix="SLACK_TOKEN"),      # TODO: xox[baprs]-…
-    Detector(name="google_api_key", pattern="", token_prefix="GOOGLE_KEY"),    # TODO: AIza…
-    Detector(name="private_key", pattern="", token_prefix="PRIVATE_KEY"),      # TODO: -----BEGIN … KEY-----
-    Detector(name="jwt", pattern="", token_prefix="JWT"),                      # TODO: base64url.base64url.sig
-    Detector(name="bearer_token", pattern="", token_prefix="BEARER"),          # TODO: Authorization: Bearer …
-    Detector(name="connection_string", pattern="", token_prefix="CONN_STR"),   # TODO: proto://user:pass@host
-    # --- Validated numerics (validate BEFORE masking) ---
-    Detector(name="credit_card", pattern="", token_prefix="CC", validate=None),  # TODO: 13-19 digits + Luhn
-    # --- PII (lower specificity → later) ---
-    Detector(name="email", pattern="", token_prefix="EMAIL"),                  # TODO: local@domain
-    Detector(name="phone", pattern="", token_prefix="PHONE"),                  # TODO: E.164-ish + validate
-    Detector(name="ip_address", pattern="", token_prefix="IP"),               # TODO: IPv4/IPv6, exclude loopback
+    Detector("aws_access_key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "AWS_KEY"),
+    Detector("aws_secret_key", "", "AWS_SECRET"),  # disabled: bare 40-char b64 over-fires
+    Detector("github_token", r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b", "GH_TOKEN"),
+    Detector("anthropic_key", r"\bsk-ant-[A-Za-z0-9_-]{16,}\b", "ANTHROPIC_KEY"),
+    Detector("openai_key", r"\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\b", "OPENAI_KEY"),
+    Detector("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", "SLACK_TOKEN"),
+    Detector("google_api_key", r"\bAIza[0-9A-Za-z_-]{35}\b", "GOOGLE_KEY"),
+    Detector(
+        "private_key",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+        "PRIVATE_KEY",
+    ),
+    Detector("jwt", r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "JWT", _jwt_ok),
+    Detector("bearer_token", r"\bBearer\s+[A-Za-z0-9._\-]{20,}", "BEARER"),
+    Detector("connection_string", r"\b[a-z][a-z0-9+.\-]*://[^\s:@/]+:[^\s:@/]+@[^\s/]+", "CONN_STR"),
+    Detector("credit_card", r"\b\d(?:[ -]?\d){12,18}\b", "CC", _luhn_ok),
+    Detector("email", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "EMAIL"),
+    Detector("phone", r"\+\d[\d\s().\-]{7,}\d", "PHONE"),
+    Detector("ip_address", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IP", _ipv4_ok),
 )
 
 
+_COMPILED: dict[str, re.Pattern[str]] = {}
+
+
+def _compiled(pattern: str) -> re.Pattern[str]:
+    rx = _COMPILED.get(pattern)
+    if rx is None:
+        rx = re.compile(pattern)
+        _COMPILED[pattern] = rx
+    return rx
+
+
 def detect(text: str, detectors: tuple[Detector, ...] = BUILTINS) -> list[Span]:
-    """Run ``detectors`` against ``text`` and return all matched spans.
+    """Find all (validated) spans in ``text`` using ``detectors`` (in order).
 
-    Each regex hit becomes a :class:`Span`; if the detector has a ``validate``
-    callback the candidate is dropped when it returns ``False``. Spans are
-    returned in the order detectors are evaluated (most-specific-first), which
-    the engine relies on for deterministic overlap resolution. Offsets are
-    half-open ``[start, end)`` into ``text``.
-
-    This function only *finds* spans — it does not mutate text, drop
-    allowlisted values, or mint tokens (that is the engine's job).
-
-    TODO(scaffold): implement regex scanning + validation.
+    Compiles each detector's string ``pattern`` (cached), applies its
+    ``validate`` callback to drop false positives, and returns the spans. Only
+    *finds* — it does not mutate text, drop allowlisted values, or mint tokens
+    (the engine does that). Disabled detectors (empty pattern) are skipped.
     """
-    raise NotImplementedError("detectors.detect is not yet implemented")
+    spans: list[Span] = []
+    for d in detectors:
+        if not d.pattern:
+            continue
+        for m in _compiled(d.pattern).finditer(text):
+            value = m.group(0)
+            if d.validate is not None and not d.validate(value):
+                continue
+            spans.append(Span(m.start(), m.end(), d.name, d.token_prefix, value))
+    return spans

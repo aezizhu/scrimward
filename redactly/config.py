@@ -1,35 +1,23 @@
 """Runtime configuration for the Redactly proxy.
 
-This module is the single source of truth for *where* the proxy listens, *where*
-it forwards, *which* rules and allowlist apply, and *where/how* the vault is
-persisted. It is intentionally concrete (downstream modules import this shape);
-only the loading helpers are stubbed.
+Single source of truth for *where* the proxy listens, *where* it forwards,
+*which* rules/allowlist apply, and *where/how* the vault is persisted.
 
-Environment variables (all optional; sane local-first defaults):
+Environment variables (all optional; local-first defaults):
 
-- ``REDACT_UPSTREAM``   — upstream base URL to forward redacted requests to.
-                          Default ``https://api.anthropic.com``. Tests point this
-                          at a mock server.
-- ``REDACT_HOST``       — bind host for the local proxy. Default ``127.0.0.1``
-                          (NEVER bind to 0.0.0.0 by default — this is a *local*
-                          proxy that handles real secrets in cleartext).
-- ``REDACT_PORT``       — bind port for the local proxy. Default ``8788``.
-- ``REDACT_RULES``      — path to the user rules + allowlist JSON. Default
-                          ``config/rules.json`` (already gitignored — it may
-                          name real secret-bearing terms).
-- ``REDACT_VAULT``      — path to the on-disk session vault. Default is
-                          *in-memory only* (None) — the vault lives for the
-                          session and is never written unless this is set. When
-                          set, the file is created 0600 inside a 0700 dir.
+- ``REDACT_UPSTREAM`` — upstream base URL. Default ``https://api.anthropic.com``.
+- ``REDACT_HOST``     — bind host. Default ``127.0.0.1`` (never 0.0.0.0 by default).
+- ``REDACT_PORT``     — bind port. Default ``8788``.
+- ``REDACT_RULES``    — path to the user rules + allowlist JSON (gitignored).
+- ``REDACT_VAULT``    — on-disk vault path. Default in-memory only (None).
 """
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-
-# --- Defaults -------------------------------------------------------------
 
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEFAULT_HOST = "127.0.0.1"
@@ -45,19 +33,7 @@ ENV_VAULT = "REDACT_VAULT"
 
 @dataclass(frozen=True)
 class UserRule:
-    """A user-declared redaction rule.
-
-    User rules are *precise by construction*: the user declares exactly what is
-    sensitive (a name, an internal hostname, a company identifier), so the
-    engine does not over-mask. A rule mints tokens under ``token_prefix`` just
-    like a built-in detector.
-
-    Attributes:
-        name: Human-readable rule name (also the ``Span.name``).
-        pattern: A regex (as a string) matched against request text.
-        token_prefix: Token family for minted tokens, e.g. ``"PERSON"`` →
-            ``«PERSON_<salt>_1»``.
-    """
+    """A user-declared redaction rule (precise by construction)."""
 
     name: str
     pattern: str
@@ -66,12 +42,7 @@ class UserRule:
 
 @dataclass(frozen=True)
 class Allowlist:
-    """Known-safe values that match a detector pattern but are NOT secrets.
-
-    Allowlisted spans are dropped *before* tokens are minted (e.g. ``localhost``,
-    ``example.com``, common ports). Allowlisting un-redacts; it never adds
-    redaction. ``literals`` are exact-match strings; ``patterns`` are regexes.
-    """
+    """Known-safe values that match a detector pattern but are NOT secrets."""
 
     literals: frozenset[str] = field(default_factory=frozenset)
     patterns: tuple[str, ...] = ()
@@ -79,20 +50,7 @@ class Allowlist:
 
 @dataclass(frozen=True)
 class Config:
-    """Resolved Redactly runtime configuration.
-
-    Construct via :func:`load` (env + rules file) rather than by hand in
-    production code, so env precedence and rule loading stay in one place.
-
-    Attributes:
-        upstream: Upstream base URL redacted requests are forwarded to.
-        host: Local bind host (default loopback only).
-        port: Local bind port.
-        rules_path: Path to the user rules/allowlist JSON (gitignored).
-        vault_path: Optional on-disk vault path; ``None`` = in-memory only.
-        user_rules: Loaded user rules (precise, opt-in).
-        allowlist: Loaded allowlist (un-redacts known-safe matches).
-    """
+    """Resolved Redactly runtime configuration."""
 
     upstream: str = DEFAULT_UPSTREAM
     host: str = DEFAULT_HOST
@@ -106,24 +64,59 @@ class Config:
 def load(*, rules_path: str | os.PathLike[str] | None = None) -> Config:
     """Resolve a :class:`Config` from environment + the rules file.
 
-    Precedence: explicit argument (``rules_path``) > environment variable >
-    built-in default. Reads ``REDACT_UPSTREAM`` / ``REDACT_HOST`` /
-    ``REDACT_PORT`` / ``REDACT_RULES`` / ``REDACT_VAULT`` and parses the rules
-    file via :func:`load_rules`.
-
-    TODO(scaffold): implement env resolution + rules-file parsing.
+    Precedence: explicit ``rules_path`` > env var > default. A *present but
+    unparseable* rules file raises (fail-closed) via :func:`load_rules`.
     """
-    raise NotImplementedError("config.load is not yet implemented")
+    upstream = os.environ.get(ENV_UPSTREAM, DEFAULT_UPSTREAM)
+    host = os.environ.get(ENV_HOST, DEFAULT_HOST)
+    port = int(os.environ.get(ENV_PORT, str(DEFAULT_PORT)))
+
+    rp = rules_path if rules_path is not None else os.environ.get(ENV_RULES, DEFAULT_RULES_PATH)
+    rules_path_p = Path(rp)
+
+    vault_env = os.environ.get(ENV_VAULT)
+    vault_path = Path(vault_env) if vault_env else None
+
+    if rules_path_p.exists():
+        user_rules, allowlist = load_rules(rules_path_p)
+    else:
+        user_rules, allowlist = (), Allowlist()
+
+    return Config(
+        upstream=upstream,
+        host=host,
+        port=port,
+        rules_path=rules_path_p,
+        vault_path=vault_path,
+        user_rules=user_rules,
+        allowlist=allowlist,
+    )
 
 
 def load_rules(path: str | os.PathLike[str]) -> tuple[tuple[UserRule, ...], Allowlist]:
-    """Parse user rules and allowlist from a JSON file.
+    """Parse user rules + allowlist from a JSON file.
 
-    Returns ``(user_rules, allowlist)``. A missing file yields empty rules and
-    an empty allowlist (no rules is a valid state). A *present but unparseable*
-    file MUST raise — a broken rules file is a fail-closed condition, not a
-    silent "redact nothing".
-
-    TODO(scaffold): implement JSON parsing into UserRule/Allowlist.
+    Returns ``(user_rules, allowlist)``. A missing file → empty rules + empty
+    allowlist (a valid state). A present-but-unparseable file RAISES — a broken
+    rules file is a fail-closed condition, not a silent "redact nothing".
     """
-    raise NotImplementedError("config.load_rules is not yet implemented")
+    p = Path(path)
+    if not p.exists():
+        return (), Allowlist()
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("redactly rules file must be a JSON object")
+    rules = tuple(
+        UserRule(
+            name=str(r["name"]),
+            pattern=str(r["pattern"]),
+            token_prefix=str(r.get("token_prefix", "CUSTOM")),
+        )
+        for r in data.get("rules", [])
+    )
+    al = data.get("allowlist", {}) or {}
+    allowlist = Allowlist(
+        literals=frozenset(al.get("literals", [])),
+        patterns=tuple(al.get("patterns", [])),
+    )
+    return rules, allowlist

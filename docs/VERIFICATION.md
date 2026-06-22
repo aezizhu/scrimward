@@ -1,4 +1,9 @@
-# claude-redact — capability verification (Claude Code v2.1.185, 2026-06-22)
+# Redactly — capability verification (Claude Code v2.1.185, 2026-06-22)
+
+> **Scope:** this document covers **Claude Code specifically** — its hook/proxy capabilities and the
+> auth-mode coverage limits for the Anthropic Messages path. Per-tool interceptability for the other
+> supported tools (Codex, Gemini CLI, Copilot) and the not-protectable tier (Cursor, Windsurf) lives
+> in [`docs/SUPPORTED-TOOLS.md`](./SUPPORTED-TOOLS.md).
 
 7 doc-grounded agents (citing code.claude.com/docs + changelog). Bottom line: a proxy is
 **unavoidable**, and "for all users" has **hard coverage limits** the PR must handle fail-closed.

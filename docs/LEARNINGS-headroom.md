@@ -1,7 +1,7 @@
 # What we learned from Headroom
 
 [Headroom](https://github.com/headroomlabs-ai/headroom) is a local proxy that wraps coding agents
-(incl. Claude Code) to **compress context**. It is the closest prior art to `claude-redact`'s
+(incl. Claude Code) to **compress context**. It is the closest prior art to Redactly's
 transport machinery. We studied its source (Rust `crates/headroom-proxy` + Python `headroom/`) to
 de-risk our design. **Same plumbing, opposite safety posture** — Headroom is *fail-open by design*
 (losing compression is harmless); a redactor must be *fail-closed* (losing a mask leaks a secret).
@@ -23,7 +23,13 @@ How (`headroom/cli/wrap.py`, `headers.rs`, `auth_mode.rs`):
 - `authorization`, `x-api-key`, `anthropic-version`, `anthropic-beta`, `user-agent` are **never**
   in any strip list → forwarded verbatim.
 
-➡️ **claude-redact does the same: transparent header reverse-proxy; mutate only the JSON body.**
+➡️ **Redactly does the same: transparent header reverse-proxy; mutate only the JSON body.**
+
+> **Headroom also validates the multi-tool pattern.** It ships `wrap` launchers for Claude Code,
+> Codex, Aider, Cline, Cursor (and more), all over the same local base-URL mechanism — confirming
+> **one proxy can serve many tools**: each tool just points its provider base-URL at the local proxy,
+> and only the **per-provider body adapter** (Anthropic Messages vs OpenAI Chat/Responses vs Gemini)
+> differs. Redactly reuses this exact shape; we add a redact/un-mask adapter per provider on top.
 
 ## 🔴 Mandatory, non-obvious: env var alone is NOT enough (issue #951)
 
@@ -41,7 +47,7 @@ Everywhere Headroom hits a problem it **forwards the original bytes** (parse err
 `Outcome::Passthrough`, compression exception; `SECURITY.md:61` declares passthrough the default).
 For us that is the **leak path**. Inversions:
 
-| Headroom (fail-open) | claude-redact (fail-closed) |
+| Headroom (fail-open) | Redactly (fail-closed) |
 |---|---|
 | Body parse error → forward original | Parse error → **block (5xx)**, forward nothing |
 | Narrow intercept gate (only POST + compressible + JSON); everything else streams **uninspected** via catch-all | **Default-deny**: buffer & inspect every request body; **block** unknown paths/content-types |
@@ -80,7 +86,7 @@ follow/block — a redirect `Location` can exfiltrate). `headers.rs` hop-by-hop/
 + verbatim auth forwarding. serde_json `preserve_order`+`arbitrary_precision`+`raw_value` for
 byte-faithful round-trips of the *unredacted* parts. Pre-consume `Content-Length` 413 cap.
 
-**Launcher (`claude-redact wrap claude`):** Click CLI; set env **and** `settings.local.json`;
+**Launcher (`redactly wrap <tool>`, e.g. `redactly wrap claude`):** Click CLI; set env **and** `settings.local.json`;
 `subprocess.run` (not exec) so a `finally:` restores state; pass unknown args via `UNPROCESSED`.
 Daemon = `Popen(start_new_session=True)`, **logs to a file not a pipe** (macOS 64KB pipe deadlock),
 poll `/readyz`. Fixed default port **8787** + pre-flight bind check ("rerun with --port N+1"); reuse a
@@ -138,4 +144,4 @@ flagging the traffic.
   lifecycle, plugin shape, vault ContextVar, and an entire **leak-detection test rig** to invert.
 
 *Credits: patterns and file references above are from Headroom (headroomlabs-ai/headroom), studied as
-prior art. claude-redact is an independent implementation with the opposite (fail-closed) safety model.*
+prior art. Redactly is an independent implementation with the opposite (fail-closed) safety model.*

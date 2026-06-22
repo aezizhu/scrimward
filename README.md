@@ -98,10 +98,12 @@ that stands the proxy up and **fails closed** if the route isn't active.
 |---|---|
 | Feasibility & threat-model verification | ✅ Done — [`docs/VERIFICATION.md`](docs/VERIFICATION.md) |
 | Architecture & spec | ✅ Done |
-| Redaction engine (text, reversible vault) | 🔨 In progress |
-| Local proxy (streaming, fail-closed) | 🔨 In progress |
-| Image redaction (Apple Vision) | 🔨 In progress |
-| Per-tool launchers + control surface (commands + guard hooks) | 🔨 In progress |
+| Redaction engine (text, reversible vault) | ✅ Done — 8/8 tests |
+| Local proxy (streaming, fail-closed) | ✅ Done — 8/8 tests |
+| Anthropic + OpenAI-Chat adapters | ✅ Done |
+| **Claude Code plugin** (slash commands + fail-closed guard hook) | ✅ Done |
+| Image redaction (Apple Vision) | 🔨 Planned |
+| OpenAI-Responses / Gemini adapters, more launchers | 🔨 Planned |
 
 ### Supported tools
 
@@ -132,6 +134,41 @@ env/config at `127.0.0.1` and forwards its auth headers verbatim, and (b) a per-
 **adapter** that knows where the text lives in each request/response shape — Anthropic Messages,
 OpenAI Chat Completions, OpenAI Responses (never touching reasoning `encrypted_content`), and Google
 Gemini (incl. Cloud Code Assist) — so it redacts the outbound request and un-masks the streamed reply.
+
+## Install & use — as a Claude Code plugin
+
+Redactly installs as a Claude Code plugin that **manages the proxy and fails closed** — it blocks tool
+use until your traffic is actually routed through the local redactor, so you can't leak by accident.
+
+```bash
+# 1. one-time: get the code + its Python deps (Python 3.12+)
+git clone https://github.com/aezizhu/redactly && cd redactly
+python3 -m pip install --user fastapi httpx uvicorn click
+
+# 2. inside Claude Code: add the marketplace + install the plugin
+/plugin marketplace add ~/redactly          # path to the clone
+/plugin install redactly@redactly-marketplace
+
+# 3. turn it on, then RESTART Claude Code
+/redactly:setup
+```
+
+After restart you're protected. Useful commands:
+
+| Command | What it does |
+|---|---|
+| `/redactly:setup` | Start the proxy + route this project; then restart your tool |
+| `/redactly:status` | Is the proxy up and is this project routed? |
+| `/redactly:add <name> <value>` | Add your own thing to always mask (a name, codename, host) |
+| `/redactly:list` | List your custom rules |
+
+**How it stays honest:** a `SessionStart` hook starts the proxy and reports status; a `PreToolUse` hook
+**denies tool use whenever the session isn't routed** through the proxy (fail-closed) — with a clear
+message telling you to run `/redactly:setup` and restart. Built-in detectors (API keys, emails, cards,
+JWTs, …) are always on; `/redactly:add` layers your own rules on top.
+
+> Prefer no plugin? The same engine runs standalone: `python -m redactly.cli wrap claude` starts the
+> proxy, routes Claude Code, and restores on exit.
 
 ## Threat model
 

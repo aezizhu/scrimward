@@ -1,0 +1,10 @@
+{
+  "name": "redactly",
+  "displayName": "Redactly",
+  "description": "Mask secrets & PII before they leave your machine for the cloud — a local, fail-closed redaction proxy for AI coding tools.",
+  "version": "0.1.0",
+  "author": { "name": "Aezi Zhu" },
+  "homepage": "https://github.com/aezizhu/redactly",
+  "repository": "https://github.com/aezizhu/redactly",
+  "keywords": ["privacy", "redaction", "security", "pii", "proxy", "ai-coding"]
+}

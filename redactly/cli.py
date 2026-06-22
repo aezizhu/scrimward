@@ -30,10 +30,16 @@ from pathlib import Path
 import click
 
 from . import __version__
-from .config import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_UPSTREAM, ENV_UPSTREAM
+from .config import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_UPSTREAM, ENV_RULES, ENV_UPSTREAM
 
 CLAUDE_SETTINGS_LOCAL = Path(".claude") / "settings.local.json"
 CLAUDE_BASE_URL_KEY = "ANTHROPIC_BASE_URL"
+
+# Global Redactly state (rules live here so the proxy daemon reads them no
+# matter which directory it was spawned from).
+REDACTLY_HOME = Path.home() / ".redactly"
+RULES_PATH = REDACTLY_HOME / "rules.json"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @click.group()
@@ -107,12 +113,16 @@ def _ensure_proxy(port: int, *, host: str = DEFAULT_HOST, timeout: float = 30.0)
     log_dir = Path.home() / ".redactly"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "proxy.log"
+    proxy_env = os.environ.copy()
+    proxy_env.setdefault(ENV_RULES, str(RULES_PATH))
     with open(log_path, "ab") as log:
         subprocess.Popen(
             [sys.executable, "-m", "redactly.cli", "proxy", "--host", host, "--port", str(port)],
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=proxy_env,
+            cwd=str(_REPO_ROOT),  # so `-m redactly.cli` resolves the package
         )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -168,6 +178,183 @@ def _restore_base_url(previous: str | None, settings_path: Path | None = None) -
     else:
         env[CLAUDE_BASE_URL_KEY] = previous
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+# --- plugin commands: setup / status / rules / hooks ---------------------
+
+
+def _proxy_url(port: int) -> str:
+    return f"http://{DEFAULT_HOST}:{port}"
+
+
+def _configured_base_url(settings_path: Path | None = None) -> str | None:
+    """Return the ANTHROPIC_BASE_URL written into the project Claude settings."""
+    path = Path(settings_path) if settings_path is not None else CLAUDE_SETTINGS_LOCAL
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    env = data.get("env") if isinstance(data, dict) else None
+    return env.get(CLAUDE_BASE_URL_KEY) if isinstance(env, dict) else None
+
+
+def _is_routed(port: int, settings_path: Path | None = None) -> bool:
+    """True if this project is configured to route at our proxy AND it is healthy."""
+    configured = _configured_base_url(settings_path) or os.environ.get(CLAUDE_BASE_URL_KEY)
+    return configured == _proxy_url(port) and _healthz(port)
+
+
+def _read_rules_doc() -> dict:
+    REDACTLY_HOME.mkdir(parents=True, exist_ok=True)
+    if not RULES_PATH.exists():
+        return {"rules": [], "allowlist": {"literals": [], "patterns": []}}
+    try:
+        return json.loads(RULES_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"rules": [], "allowlist": {"literals": [], "patterns": []}}
+
+
+def _write_rules_doc(doc: dict) -> None:
+    REDACTLY_HOME.mkdir(parents=True, exist_ok=True)
+    RULES_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+@main.command("setup")
+@click.option("--port", default=DEFAULT_PORT, show_default=True, type=int)
+def setup_cmd(port: int) -> None:
+    """Start the proxy and route this project through it (run once, then RESTART your tool)."""
+    if not RULES_PATH.exists():
+        _write_rules_doc({"rules": [], "allowlist": {"literals": [], "patterns": []}})
+    _ensure_proxy(port)
+    _write_base_url(_proxy_url(port))
+    click.echo(f"redactly: proxy healthy on {_proxy_url(port)}; routing written to {CLAUDE_SETTINGS_LOCAL}.")
+    click.echo("redactly: RESTART your AI tool (exit and re-run it) for routing to take effect.")
+
+
+@main.command("status")
+@click.option("--port", default=DEFAULT_PORT, show_default=True, type=int)
+def status_cmd(port: int) -> None:
+    """Show whether the proxy is up and this project is routed through it."""
+    click.echo(f"proxy ({_proxy_url(port)}) healthy : {_healthz(port)}")
+    click.echo(f"this project routed        : {_is_routed(port)}")
+    click.echo(f"custom rules               : {len(_read_rules_doc().get('rules', []))}")
+    if not _is_routed(port):
+        click.echo("→ NOT protected. Run `redactly setup` (or /redactly:setup) then restart your tool.")
+
+
+@main.group("rules")
+def rules_grp() -> None:
+    """Manage custom redaction rules (~/.redactly/rules.json)."""
+
+
+@rules_grp.command("add")
+@click.argument("name")
+@click.argument("value")
+@click.option("--regex", is_flag=True, help="Treat VALUE as a regex (default: literal text).")
+@click.option("--prefix", default="CUSTOM", show_default=True, help="Token family prefix.")
+def rules_add(name: str, value: str, regex: bool, prefix: str) -> None:
+    """Redact VALUE (a literal, or --regex) everywhere, as «PREFIX_…»."""
+    import re as _re
+
+    doc = _read_rules_doc()
+    doc.setdefault("rules", [])
+    doc["rules"] = [r for r in doc["rules"] if r.get("name") != name]
+    doc["rules"].append(
+        {"name": name, "pattern": value if regex else _re.escape(value), "token_prefix": prefix}
+    )
+    _write_rules_doc(doc)
+    click.echo(f"redactly: added rule {name!r} (prefix {prefix}). Restart the proxy to apply.")
+
+
+@rules_grp.command("list")
+def rules_list() -> None:
+    rules = _read_rules_doc().get("rules", [])
+    if not rules:
+        click.echo("(no custom rules)")
+    for r in rules:
+        click.echo(f"  {r.get('name')}: /{r.get('pattern')}/ -> «{r.get('token_prefix')}_…»")
+
+
+@rules_grp.command("remove")
+@click.argument("name")
+def rules_remove(name: str) -> None:
+    doc = _read_rules_doc()
+    before = len(doc.get("rules", []))
+    doc["rules"] = [r for r in doc.get("rules", []) if r.get("name") != name]
+    _write_rules_doc(doc)
+    click.echo(f"redactly: removed {before - len(doc['rules'])} rule(s) named {name!r}.")
+
+
+@main.group("hook")
+def hook_grp() -> None:
+    """Internal: Claude Code hook entrypoints (not for direct use)."""
+
+
+def _read_hook_input() -> dict:
+    """Read + parse the hook's stdin JSON (Claude Code feeds hooks JSON)."""
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read()
+            if raw.strip():
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+@hook_grp.command("session-start")
+@click.option("--port", default=DEFAULT_PORT, type=int)
+def hook_session_start(port: int) -> None:
+    """SessionStart: best-effort start the proxy; report protection status."""
+    _read_hook_input()
+    try:
+        _ensure_proxy(port, timeout=8.0)
+    except SystemExit:
+        pass
+    if _is_routed(port):
+        msg = f"🛡 Redactly active: this project's cloud traffic routes through the local redaction proxy (127.0.0.1:{port})."
+    elif _configured_base_url() == _proxy_url(port):
+        msg = "🛡 Redactly is configured; if tool use is blocked the proxy isn't healthy yet — run `redactly status` or re-run /redactly:setup."
+    else:
+        msg = (
+            "⚠ Redactly is installed but NOT protecting this session yet. Run /redactly:setup, then RESTART your "
+            "tool. Until routing is active, tool use is blocked (fail-closed) so nothing leaks unredacted."
+        )
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": msg}}))
+
+
+@hook_grp.command("guard")
+@click.option("--port", default=DEFAULT_PORT, type=int)
+def hook_guard(port: int) -> None:
+    """PreToolUse: fail-closed — deny tool use unless traffic is routed through the proxy."""
+    payload = _read_hook_input()
+    if _is_routed(port):
+        return  # allow
+    # Bootstrap escape hatch: never block Redactly's OWN setup/status commands,
+    # or the user couldn't run /redactly:setup to turn routing on.
+    if payload.get("tool_name") in ("Bash", "Shell"):
+        cmd = (payload.get("tool_input") or {}).get("command", "")
+        if "redactly" in cmd:
+            return
+    reason = (
+        "Redactly fail-closed guard: this session is NOT routed through the local redaction proxy, so anything "
+        "sent to the cloud could leak secrets/PII. Run /redactly:setup and restart your AI tool to activate "
+        "redaction, then retry."
+    )
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        )
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

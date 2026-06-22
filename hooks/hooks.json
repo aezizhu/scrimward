@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/redactly-py hook session-start",
+            "timeout": 20,
+            "statusMessage": "Redactly: checking redaction proxy…"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/redactly-py hook guard",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

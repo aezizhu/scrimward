@@ -1,0 +1,11 @@
+{
+  "name": "redactly-marketplace",
+  "owner": { "name": "Aezi Zhu" },
+  "plugins": [
+    {
+      "name": "redactly",
+      "source": "./",
+      "description": "Local, fail-closed redaction proxy for AI coding tools — mask secrets/PII before they reach the cloud."
+    }
+  ]
+}

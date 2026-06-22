@@ -107,8 +107,9 @@ for the control surface) that stands the proxy up and **fails closed** if the ro
 | Auth mode | Can the proxy protect you? |
 |---|---|
 | **API key** | ✅ Yes — full text + image redaction |
-| **Pro/Max subscription (OAuth)** | ⚠️ Unverified upstream — treated as **fail-closed** until confirmed by test |
-| **Bedrock / Vertex** | ⛔ Not proxyable (separate signed endpoint) — **detected & refused**, never faked |
+| **Pro/Max subscription (OAuth)** | ✅ Proven viable — prior art ([Headroom](docs/LEARNINGS-headroom.md)) routes Claude Code OAuth through a local proxy with no API-key billing; pending our own end-to-end test |
+| **Vertex** | ✅ Viable via `ANTHROPIC_VERTEX_BASE_URL` (forwards your existing ADC token) |
+| **Bedrock** | ⚠️ Redacting the body invalidates AWS SigV4 — needs a re-signing gateway; otherwise **detected & refused**, never faked |
 
 ## Threat model
 
@@ -129,6 +130,7 @@ This is a guardrail against leaks, not a guarantee against a determined adversar
 ## Documentation
 
 - [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — what's actually possible in Claude Code (cited).
+- [`docs/LEARNINGS-headroom.md`](docs/LEARNINGS-headroom.md) — patterns & anti-patterns learned from the closest prior art.
 - `docs/ARCHITECTURE.md` — components, data flow, and design decisions *(coming with the first code drop)*.
 
 ## Contributing

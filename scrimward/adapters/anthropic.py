@@ -11,7 +11,7 @@ Streamed response (SSE): text arrives in ``content_block_delta`` events whose
 ``text`` of those deltas, carry-buffering any token that splits across two
 deltas.
 
-This adapter satisfies the :class:`~redactly.adapters.base.Adapter` Protocol
+This adapter satisfies the :class:`~scrimward.adapters.base.Adapter` Protocol
 structurally (no inheritance required).
 """
 

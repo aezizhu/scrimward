@@ -2,7 +2,7 @@
 
 ## Why this exists
 Inputs sent to the model provider can be **retained (e.g. ~30 days)** for trust-and-safety review.
-For private code and PII that retention window is unacceptable. Redactly ensures the copy that
+For private code and PII that retention window is unacceptable. Scrimward ensures the copy that
 leaves your machine — and therefore any retained copy — **does not contain your secrets**.
 
 > Note: where available, an Anthropic **Zero-Data-Retention** agreement removes retention entirely —

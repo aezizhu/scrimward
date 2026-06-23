@@ -1,4 +1,4 @@
-"""Runtime configuration for the Redactly proxy.
+"""Runtime configuration for the Scrimward proxy.
 
 Single source of truth for *where* the proxy listens, *where* it forwards,
 *which* rules/allowlist apply, and *where/how* the vault is persisted.
@@ -50,7 +50,7 @@ class Allowlist:
 
 @dataclass(frozen=True)
 class Config:
-    """Resolved Redactly runtime configuration."""
+    """Resolved Scrimward runtime configuration."""
 
     upstream: str = DEFAULT_UPSTREAM
     host: str = DEFAULT_HOST
@@ -105,7 +105,7 @@ def load_rules(path: str | os.PathLike[str]) -> tuple[tuple[UserRule, ...], Allo
         return (), Allowlist()
     data = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("redactly rules file must be a JSON object")
+        raise ValueError("scrimward rules file must be a JSON object")
     rules = tuple(
         UserRule(
             name=str(r["name"]),

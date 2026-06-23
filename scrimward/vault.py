@@ -128,7 +128,7 @@ class Vault:
 
 # --- per-session active-vault ContextVar ---------------------------------
 
-_current_vault: ContextVar[Vault | None] = ContextVar("redactly_current_vault", default=None)
+_current_vault: ContextVar[Vault | None] = ContextVar("scrimward_current_vault", default=None)
 
 
 def current_vault() -> Vault | None:

@@ -1,9 +1,9 @@
 {
-  "name": "redactly-marketplace",
+  "name": "scrimward-marketplace",
   "owner": { "name": "Aezi Zhu" },
   "plugins": [
     {
-      "name": "redactly",
+      "name": "scrimward",
       "source": "./",
       "description": "Local, fail-closed redaction proxy for AI coding tools — mask secrets/PII before they reach the cloud."
     }

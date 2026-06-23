@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "redactly"
+name = "scrimward"
 version = "0.0.1"
 description = "Local, fail-closed redaction proxy for AI coding tools — mask secrets before they leave your machine."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-authors = [{ name = "Redactly" }]
+authors = [{ name = "Scrimward" }]
 keywords = ["redaction", "privacy", "proxy", "pii", "secrets", "llm", "ai-coding"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -29,15 +29,15 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-# Entry point: `redactly` → the click group exposed as redactly.cli:main.
-redactly = "redactly.cli:main"
+# Entry point: `scrimward` → the click group exposed as scrimward.cli:main.
+scrimward = "scrimward.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/redactly/redactly"
+Homepage = "https://github.com/scrimward/scrimward"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["redactly*"]
+include = ["scrimward*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

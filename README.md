@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ Redactly
+# 🛡️ Scrimward
 
 ### Mask your secrets **before** they ever leave your machine for the cloud.
 
@@ -17,7 +17,7 @@
 
 > ### ⚠️ Status
 > **Design and feasibility are verified; implementation is in progress.** Do **not** yet rely on
-> `redactly` to protect real secrets. This README describes the intended behavior and the
+> `scrimward` to protect real secrets. This README describes the intended behavior and the
 > architecture it is being built to. See [`docs/SUPPORTED-TOOLS.md`](docs/SUPPORTED-TOOLS.md) for
 > what's possible per tool, and [`docs/VERIFICATION.md`](docs/VERIFICATION.md) for the Claude Code
 > deep-dive — verified against the official docs, not assumed.
@@ -35,7 +35,7 @@ You shouldn't have to choose between *"use the agent"* and *"keep this private."
 
 ## The idea
 
-`redactly` puts a tiny **redaction proxy on your own machine**, between your AI coding tool and the
+`scrimward` puts a tiny **redaction proxy on your own machine**, between your AI coding tool and the
 cloud. Nothing reaches the provider until it has passed through the masker:
 
 ```
@@ -43,7 +43,7 @@ cloud. Nothing reaches the provider until it has passed through the masker:
                                                  │   <tool>'s base-URL → 127.0.0.1
                                                  ▼
                                  ┌───────────────────────────────┐
-                                 │         redactly proxy          │  ← only ever on your machine
+                                 │         scrimward proxy          │  ← only ever on your machine
                                  │   • detect secrets & PII        │
                                  │   • mask text   →  «EMAIL_1»    │
                                  │   • blur image regions (faces,  │
@@ -80,7 +80,7 @@ This is the honest core of the project. We verified it against the current Claud
 > do it as a pure hook/MCP plugin will *look* installed while silently leaking images and prompts —
 > the exact failure mode this project refuses to ship.
 
-`redactly` is therefore packaged as an **installable bundle** (a per-tool launcher + a control surface)
+`scrimward` is therefore packaged as an **installable bundle** (a per-tool launcher + a control surface)
 that stands the proxy up and **fails closed** if the route isn't active.
 
 ## Features
@@ -108,7 +108,7 @@ that stands the proxy up and **fails closed** if the route isn't active.
 
 ### Supported tools
 
-Redactly is **provider-, not vendor-, shaped**: it protects any tool you can point at the local proxy.
+Scrimward is **provider-, not vendor-, shaped**: it protects any tool you can point at the local proxy.
 The honest matrix below is the credibility core — full per-tool setup detail in
 [`docs/SUPPORTED-TOOLS.md`](docs/SUPPORTED-TOOLS.md).
 
@@ -123,14 +123,14 @@ The honest matrix below is the credibility core — full per-tool setup detail i
 | **Cursor** | ⛔ Not protectable | Prompts are assembled on Cursor's cloud and the BYOK base-URL override is dialed server-side — a local proxy can never see the content first |
 | **Windsurf** (Codeium / Devin Desktop) | ⛔ Not protectable | Everything routes through Codeium's backend; there is no base-URL hook for the proxy to sit on |
 
-For the ⛔ tier, Redactly **cannot** protect you and we say so plainly: the tool sends your content to
+For the ⛔ tier, Scrimward **cannot** protect you and we say so plainly: the tool sends your content to
 its **own vendor backend before any provider call**, so the retention point is the tool itself —
 nothing a local proxy can intercept. We never pretend otherwise.
 
 ### How it works across tools
 
 One shared core, reused everywhere: a single **local fail-closed proxy** plus a reversible **session
-vault**. Per supported tool, Redactly adds (a) a thin **launcher** that points that tool's base-URL
+vault**. Per supported tool, Scrimward adds (a) a thin **launcher** that points that tool's base-URL
 env/config at `127.0.0.1` and forwards its auth headers verbatim, and (b) a per-**provider** body
 **adapter** that knows where the text lives in each request/response shape — Anthropic Messages,
 OpenAI Chat Completions, OpenAI Responses (never touching reasoning `encrypted_content`), and Google
@@ -138,37 +138,37 @@ Gemini (incl. Cloud Code Assist) — so it redacts the outbound request and un-m
 
 ## Install & use — as a Claude Code plugin
 
-Redactly installs as a Claude Code plugin that **manages the proxy and fails closed** — it blocks tool
+Scrimward installs as a Claude Code plugin that **manages the proxy and fails closed** — it blocks tool
 use until your traffic is actually routed through the local redactor, so you can't leak by accident.
 
 ```bash
 # 1. one-time: get the code + its Python deps (Python 3.12+)
-git clone https://github.com/aezizhu/redactly && cd redactly
+git clone https://github.com/aezizhu/scrimward && cd scrimward
 python3 -m pip install --user fastapi httpx uvicorn click
 
 # 2. inside Claude Code: add the marketplace + install the plugin
-/plugin marketplace add ~/redactly          # path to the clone
-/plugin install redactly@redactly-marketplace
+/plugin marketplace add ~/scrimward          # path to the clone
+/plugin install scrimward@scrimward-marketplace
 
 # 3. turn it on, then RESTART Claude Code
-/redactly:setup
+/scrimward:setup
 ```
 
 After restart you're protected. Useful commands:
 
 | Command | What it does |
 |---|---|
-| `/redactly:setup` | Start the proxy + route this project; then restart your tool |
-| `/redactly:status` | Is the proxy up and is this project routed? |
-| `/redactly:add <name> <value>` | Add your own thing to always mask (a name, codename, host) |
-| `/redactly:list` | List your custom rules |
+| `/scrimward:setup` | Start the proxy + route this project; then restart your tool |
+| `/scrimward:status` | Is the proxy up and is this project routed? |
+| `/scrimward:add <name> <value>` | Add your own thing to always mask (a name, codename, host) |
+| `/scrimward:list` | List your custom rules |
 
 **How it stays honest:** a `SessionStart` hook starts the proxy and reports status; a `PreToolUse` hook
 **denies tool use whenever the session isn't routed** through the proxy (fail-closed) — with a clear
-message telling you to run `/redactly:setup` and restart. Built-in detectors (API keys, emails, cards,
-JWTs, …) are always on; `/redactly:add` layers your own rules on top.
+message telling you to run `/scrimward:setup` and restart. Built-in detectors (API keys, emails, cards,
+JWTs, …) are always on; `/scrimward:add` layers your own rules on top.
 
-> Prefer no plugin? The same engine runs standalone: `python -m redactly.cli wrap claude` starts the
+> Prefer no plugin? The same engine runs standalone: `python -m scrimward.cli wrap claude` starts the
 > proxy, routes Claude Code, and restores on exit.
 
 ## Threat model

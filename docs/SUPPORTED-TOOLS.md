@@ -1,11 +1,11 @@
-# 🧰 Redactly — supported tools
+# 🧰 Scrimward — supported tools
 
-**Which AI coding tools can Redactly protect, and exactly how.**
+**Which AI coding tools can Scrimward protect, and exactly how.**
 
 > 🔧 Implementing a tool? **Build-ready per-tool specs** (launcher, auth, body adapter, fail-closed
 > gating, canary leak test) live in [`docs/integrations/`](integrations/).
 
-Redactly is a privacy redaction proxy for AI coding tools *generally* — not Claude Code only.
+Scrimward is a privacy redaction proxy for AI coding tools *generally* — not Claude Code only.
 One local, fail‑closed proxy plus a reversible session vault sits between your tool and the cloud.
 For each tool you (a) point that tool's **base‑URL env/config** at the local proxy and forward the
 auth headers verbatim, and (b) the proxy uses a per‑**provider** body adapter to redact the outbound
@@ -13,17 +13,17 @@ request and un‑mask the streamed response.
 
 > ### ⚠️ Status — early development
 > **Design and feasibility are verified; implementation is in progress.** Do **not** yet rely on
-> Redactly to protect real secrets. This document describes the intended interception points and the
+> Scrimward to protect real secrets. This document describes the intended interception points and the
 > honest limits of each one, grounded in current (2026) per‑tool research.
 
 ---
 
 ## Why retention is the thing we fight
 
-Providers can **retain inputs (e.g. ~30 days)** for trust‑and‑safety review. Redactly sanitizes the
+Providers can **retain inputs (e.g. ~30 days)** for trust‑and‑safety review. Scrimward sanitizes the
 copy that leaves your machine, so the **retained copy carries no secrets/PII** — for any *supported*
 tool. Where available, an enterprise **Zero‑Data‑Retention** agreement removes retention entirely, but
-that's vendor‑ and plan‑gated. Redactly is the accessible, **you‑control‑it** layer that also works for
+that's vendor‑ and plan‑gated. Scrimward is the accessible, **you‑control‑it** layer that also works for
 subscription users and as defense‑in‑depth. The two compose.
 
 The architecture generalizes because the proxy and vault are **shared across tools** — only the thin
@@ -76,7 +76,7 @@ sends your content *before* any provider call, so a local proxy can never see it
 - **Base‑URL mechanism:** `OPENAI_API_BASE` and `ANTHROPIC_BASE_URL` both point at the proxy; Aider
   reaches providers through **LiteLLM**, which routes by the selected model.
 - **Auth modes:** local, bring‑your‑own‑key — **100% interceptable**.
-- **Adapter (dual):** because LiteLLM routes by model, Redactly engages **two** provider adapters:
+- **Adapter (dual):** because LiteLLM routes by model, Scrimward engages **two** provider adapters:
   - **OpenAI Chat Completions** for GPT‑family models — redacts `messages[].content`, un‑masks SSE
     `choices[].delta.content`.
   - **Anthropic Messages** for Claude‑family models — redacts `system` + `messages[].content[].text`,
@@ -137,7 +137,7 @@ sends your content *before* any provider call, so a local proxy can never see it
 - **Adapter:** the BYOK path is OpenAI‑style **Chat Completions**, so the Chat Completions adapter
   (`messages[].content` / SSE `choices[].delta.content`) is the natural fit. *We are not publishing
   exact verified field paths for the subscription/IDE envelopes here — they vary and the research does
-  not yet pin them; Redactly will not fabricate a field‑map it hasn't verified.*
+  not yet pin them; Scrimward will not fabricate a field‑map it hasn't verified.*
 
 ---
 
@@ -145,14 +145,14 @@ sends your content *before* any provider call, so a local proxy can never see it
 
 These tools route through the **vendor's own backend** *before* any provider call. The prompt is
 assembled and the request is sent from the vendor's cloud, so a local proxy never sees the content
-first. The tool itself is the retention point — Redactly **cannot** protect these, and we won't pretend
+first. The tool itself is the retention point — Scrimward **cannot** protect these, and we won't pretend
 otherwise.
 
 ### Cursor
 
-> **Why Redactly can't protect this.** Cursor assembles your prompt **on Cursor's cloud**, not on your
+> **Why Scrimward can't protect this.** Cursor assembles your prompt **on Cursor's cloud**, not on your
 > machine. Even with "bring your own key", the base‑URL override is dialed **server‑side** — your
-> request is built and dispatched from Cursor's backend, where `localhost` (and therefore the Redactly
+> request is built and dispatched from Cursor's backend, where `localhost` (and therefore the Scrimward
 > proxy) is simply unreachable. There is no point in the path where the complete outbound payload
 > passes through your machine before reaching the model provider.
 
@@ -161,7 +161,7 @@ otherwise.
 
 ### Windsurf (Codeium / now Devin Desktop)
 
-> **Why Redactly can't protect this.** Everything goes through **Codeium's backend** — context
+> **Why Scrimward can't protect this.** Everything goes through **Codeium's backend** — context
 > gathering, prompt assembly, and the provider call all happen server‑side. There is **no base‑URL
 > hook** to redirect at the client, so the proxy can never intercept the request before it leaves for
 > the vendor.

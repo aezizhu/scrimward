@@ -1,15 +1,15 @@
-# Redactly integration — OpenAI Codex CLI
+# Scrimward integration — OpenAI Codex CLI
 
 ![status](https://img.shields.io/badge/status-%E2%9A%A0%EF%B8%8F%20partial-orange) **⚠️ partial** — interceptable over HTTP with caveats; force HTTP transport and refuse if WebSocket/realtime is active.
 
 > Provider API: **OpenAI Responses** (`POST /v1/responses`) — **not** Chat Completions.
-> Engine: the shared Redactly local fail-closed proxy + reversible session vault. This doc only pins the **launcher** and the **Responses body adapter** for Codex.
+> Engine: the shared Scrimward local fail-closed proxy + reversible session vault. This doc only pins the **launcher** and the **Responses body adapter** for Codex.
 
 ---
 
 ## 1. TL;DR verdict
 
-Codex CLI is **protectable over HTTP**: you can route its inference at `127.0.0.1` via `OPENAI_BASE_URL` (API-key mode) or a global `~/.codex/config.toml` custom `model_provider` (ChatGPT-OAuth mode), and the Responses body adapter redacts the request and un-masks the stream. It is **not** in the ⛔ vendor-backend tier — there is no Codex cloud that assembles your prompt first; the complete outbound payload passes through your machine. The two real caveats that keep it at ⚠️: (a) Codex can negotiate an **opt-in WebSocket/realtime transport** that a body-only HTTP proxy cannot inspect — Redactly must **force HTTP and refuse if WS is active**, never silently pass it; and (b) the **default ChatGPT-login auth** needs a conditional `requires_openai_auth` flag, which — if set in API-key mode — *breaks* API-key users.
+Codex CLI is **protectable over HTTP**: you can route its inference at `127.0.0.1` via `OPENAI_BASE_URL` (API-key mode) or a global `~/.codex/config.toml` custom `model_provider` (ChatGPT-OAuth mode), and the Responses body adapter redacts the request and un-masks the stream. It is **not** in the ⛔ vendor-backend tier — there is no Codex cloud that assembles your prompt first; the complete outbound payload passes through your machine. The two real caveats that keep it at ⚠️: (a) Codex can negotiate an **opt-in WebSocket/realtime transport** that a body-only HTTP proxy cannot inspect — Scrimward must **force HTTP and refuse if WS is active**, never silently pass it; and (b) the **default ChatGPT-login auth** needs a conditional `requires_openai_auth` flag, which — if set in API-key mode — *breaks* API-key users.
 
 ---
 
@@ -35,8 +35,8 @@ Codex reads three relevant config surfaces. **Pick by auth mode** (§4). In all 
 ### 3a. API-key mode (cleanest) — env var, process-scoped, no file mutation
 
 ```bash
-# launcher: redactly-codex
-export OPENAI_BASE_URL="http://127.0.0.1:${REDACTLY_PORT}/v1"
+# launcher: scrimward-codex
+export OPENAI_BASE_URL="http://127.0.0.1:${SCRIMWARD_PORT}/v1"
 exec codex "$@"
 ```
 
@@ -48,26 +48,26 @@ exec codex "$@"
 OAuth login does not consult `OPENAI_BASE_URL` for the custom-provider account flow; you need a named provider. Write a **marker-delimited managed block** so revert is exact (mirrors Headroom `install.py`). [H1]
 
 ```toml
-# --- Redactly managed provider ---
-model_provider = "redactly"
+# --- Scrimward managed provider ---
+model_provider = "scrimward"
 openai_base_url = "http://127.0.0.1:PORT/v1"
 
-[model_providers.redactly]
-name = "Redactly local proxy"
+[model_providers.scrimward]
+name = "Scrimward local proxy"
 base_url = "http://127.0.0.1:PORT/v1"
 wire_api = "responses"
 requires_openai_auth = true     # ONLY in ChatGPT-OAuth mode — see §4
 # DO NOT emit supports_websockets — force HTTP transport (§6, the WS leak trap)
-# --- end Redactly managed provider ---
+# --- end Scrimward managed provider ---
 ```
 
 **Write idempotently** — read the file, if the start marker exists `re.sub` the whole `START … END` block in place; else append after `existing.rstrip() + "\n\n"`. **Restore on exit** — remove the marker block, then strip orphan top-level keys a crashed write may have left *outside* the block:
 
 ```python
 # orphan-key sweep on revert (from Headroom install.py)
-ORPHAN_MODEL_PROVIDER  = r'(?m)^[ \t]*model_provider[ \t]*=[ \t]*"redactly"[ \t]*\r?\n'
+ORPHAN_MODEL_PROVIDER  = r'(?m)^[ \t]*model_provider[ \t]*=[ \t]*"scrimward"[ \t]*\r?\n'
 ORPHAN_OPENAI_BASE_URL = r'(?m)^[ \t]*openai_base_url[ \t]*=[ \t]*"http://127\.0\.0\.1:\d+/v1"[ \t]*\r?\n'
-ORPHAN_PROVIDER_TABLE  = r'(?ms)^\[model_providers\.redactly\][^\[]*?base_url[ \t]*=[ \t]*"http://127\.0\.0\.1:\d+/v1"[^\[]*?(?=^\[|\Z)'
+ORPHAN_PROVIDER_TABLE  = r'(?ms)^\[model_providers\.scrimward\][^\[]*?base_url[ \t]*=[ \t]*"http://127\.0\.0\.1:\d+/v1"[^\[]*?(?=^\[|\Z)'
 ```
 
 - **Scope gotcha:** the block must be in the **global** config (§3 CRITICAL). A project-local copy is ignored → silent leak.
@@ -75,7 +75,7 @@ ORPHAN_PROVIDER_TABLE  = r'(?ms)^\[model_providers\.redactly\][^\[]*?base_url[ \
 
 ### 3c. WebSocket is OFF by design
 
-Do **not** set `experimental_realtime_ws_base_url` and do **not** emit `supports_websockets = true` (Headroom emits it unconditionally because it ships a WS frame relay — **Redactly does not**, so copying that line is a silent-leak bug). The provider block above pins `wire_api = "responses"` (HTTP `POST /responses`) and the §6 probe refuses if a WS/realtime route is live. [H1]
+Do **not** set `experimental_realtime_ws_base_url` and do **not** emit `supports_websockets = true` (Headroom emits it unconditionally because it ships a WS frame relay — **Scrimward does not**, so copying that line is a silent-leak bug). The provider block above pins `wire_api = "responses"` (HTTP `POST /responses`) and the §6 probe refuses if a WS/realtime route is live. [H1]
 
 ---
 
@@ -108,7 +108,7 @@ Request `input` items diverge sharply by `type`; classify each, redact only text
 | `input[]` item `type:"local_shell_call_output"` → `output` (string) | command stdout/stderr |
 | `input[]` item `type:"apply_patch_call_output"` → `output` (string) | post-apply file content / error text |
 
-> The three `*_output` strings are exactly the live-zone-eligible items in Headroom's classifier (`is_output_item()`), gated by an output floor (`OUTPUT_ITEM_MIN_BYTES = 512`). [H3] Redactly redacts them regardless of size — secrets don't respect a 512-byte floor — but reuses the same per-item classification.
+> The three `*_output` strings are exactly the live-zone-eligible items in Headroom's classifier (`is_output_item()`), gated by an output floor (`OUTPUT_ITEM_MIN_BYTES = 512`). [H3] Scrimward redacts them regardless of size — secrets don't respect a 512-byte floor — but reuses the same per-item classification.
 
 ### 5b. REQUEST — NEVER touch (byte-fidelity; redacting these breaks the request)
 
@@ -238,12 +238,12 @@ The canary must be **high-entropy and unique per run** so a match in egress is u
 - Headroom feature issue confirming OAuth + `ChatGPT-Account-ID` passthrough for Codex Responses traffic — chopratejas/headroom #773: https://github.com/chopratejas/headroom/issues/773
 
 **Headroom reference repo (`/tmp/headroom-ref`):**
-- [H1] `headroom/providers/codex/install.py` — marker-block write/revert, orphan-key regexes, `codex_uses_chatgpt_auth`, conditional `requires_openai_auth`, `build_provider_section` (note: emits `supports_websockets = true` — **Redactly omits this**).
+- [H1] `headroom/providers/codex/install.py` — marker-block write/revert, orphan-key regexes, `codex_uses_chatgpt_auth`, conditional `requires_openai_auth`, `build_provider_section` (note: emits `supports_websockets = true` — **Scrimward omits this**).
 - [H2] `headroom/providers/codex/runtime.py` — `proxy_base_url(port)` = `http://127.0.0.1:{port}/v1`; `build_launch_env` sets `OPENAI_BASE_URL`.
 - [H3] `crates/headroom-proxy/src/responses_items.rs` — per-`type` classifier: `Message`/`content` parts, `*_call_output` `output` strings (redact-eligible), `reasoning`/`compaction` `encrypted_content`, `apply_patch` `diff`, `local_shell_call.action.command` argv array, `function_call.arguments` string (NEVER touch); `is_output_item()`, `OUTPUT_ITEM_MIN_BYTES = 512`, unknown-type byte-faithful passthrough.
 - `tests/test_openai_codex_routing.py` — routing test reference.
 
-**Redactly internal:**
+**Scrimward internal:**
 - `docs/REDACTION-POLICY.md` — redact value / preserve structure / restore on response; token format; fail-closed-is-transport-not-aggression.
 - `docs/SUPPORTED-TOOLS.md` — Codex CLI row (⚠️ partial; Responses adapter; NEVER touch reasoning `encrypted_content`).
 - `docs/VERIFICATION.md` — fail-closed probe + canary discipline (real round-trip, not "env var set").

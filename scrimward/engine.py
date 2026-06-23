@@ -288,13 +288,13 @@ def build_redactor(config: Config, vault: Vault) -> Redactor:
 
     This is the wiring helper the proxy uses when it builds the per-request
     vault + redactor: it pulls the user rules and allowlist off the resolved
-    :class:`~redactly.config.Config` (already loaded from env + the rules file
-    via :func:`redactly.config.load`) and hands them to the engine, alongside
+    :class:`~scrimward.config.Config` (already loaded from env + the rules file
+    via :func:`scrimward.config.load`) and hands them to the engine, alongside
     the built-in detectors.
 
     Keeping this here — rather than re-parsing a rules file — means the engine
     has exactly one way to be built from config and the file-format concern
-    stays in ``redactly.config`` (the single source of truth for rule loading).
+    stays in ``scrimward.config`` (the single source of truth for rule loading).
     A malformed rules file has already failed closed at ``config.load`` time, so
     by the time we get here ``config.user_rules`` / ``config.allowlist`` are
     valid; any bad *pattern* still surfaces eagerly here at compile time.

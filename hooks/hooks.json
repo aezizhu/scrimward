@@ -6,9 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/redactly-py hook session-start",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/scrimward-py hook session-start",
             "timeout": 20,
-            "statusMessage": "Redactly: checking redaction proxy…"
+            "statusMessage": "Scrimward: checking redaction proxy…"
           }
         ]
       }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/redactly-py hook guard",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/scrimward-py hook guard",
             "timeout": 10
           }
         ]

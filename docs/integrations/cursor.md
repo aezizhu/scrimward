@@ -1,4 +1,4 @@
-# Redactly × Cursor — integration spec
+# Scrimward × Cursor — integration spec
 
 ![status](https://img.shields.io/badge/status-%E2%9B%94%20NOT%20PROTECTABLE-red)
 
@@ -16,7 +16,7 @@ Cursor routes **every** request through Cursor's servers "for final prompt build
 the open files, and the gathered codebase context are ingested by Cursor's cloud in **cleartext**
 before any provider (OpenAI/Anthropic/etc.) is called. The only client-side BYOK lever, *Override
 OpenAI Base URL*, is dialed **from Cursor's backend**, requires a **public HTTPS** URL, and only
-affects **chat models** — so a `127.0.0.1` Redactly proxy is structurally unreachable, and even a
+affects **chat models** — so a `127.0.0.1` Scrimward proxy is structurally unreachable, and even a
 public tunnel only sanitizes the **cloud→provider** leg *after* Cursor already retained the raw text.
 Worse, turning that BYOK lever on **voids Cursor's Zero-Data-Retention policy** (verified, §4/§7). If
 you need real pre-provider redaction, use a **supported** tool — **Claude Code**, **Aider**, or
@@ -24,9 +24,9 @@ you need real pre-provider redaction, use a **supported** tool — **Claude Code
 
 ---
 
-## 2. Why the Redactly premise is structurally defeated
+## 2. Why the Scrimward premise is structurally defeated
 
-Redactly's whole model is: *the tool emits the outbound HTTPS request from your machine; we intercept
+Scrimward's whole model is: *the tool emits the outbound HTTPS request from your machine; we intercept
 it on `127.0.0.1` before it leaves.* That requires the **complete payload to exist client-side** at
 some interceptable moment. Cursor breaks this at the root:
 
@@ -36,7 +36,7 @@ some interceptable moment. Cursor breaks this at the root:
   you ─▶ tool (local)                          you ─▶ Cursor client (local)
           │ builds full request locally                │ ships prompt + files + context
           ▼                                            ▼   IN CLEARTEXT to Cursor's cloud
-   127.0.0.1  ← Redactly intercepts HERE       Cursor CLOUD  ← assembles the final prompt
+   127.0.0.1  ← Scrimward intercepts HERE       Cursor CLOUD  ← assembles the final prompt
           │ redacted                                   │      (already has your raw secrets;
           ▼                                            │       this is the retention point)
      provider API (cloud)                              ▼
@@ -55,7 +55,7 @@ touchpoints are (a) `headroom/memory/writers/cursor_writer.py`, a `.cursor/rules
 and (b) `headroom/providers/cursor/runtime.py`, whose `render_setup_lines()` merely *prints*
 `Base URL: http://127.0.0.1:<port>/…` for the user to paste into "Override OpenAI Base URL".
 Headroom is a **token-compression** proxy, where a *partial* hit (chat-only, best-effort) is still a
-win and **security is not the goal** — so it tolerates that localhost paste. For Redactly, a
+win and **security is not the goal** — so it tolerates that localhost paste. For Scrimward, a
 **fail-closed security** proxy, the identical paste is a silent-leak trap (the route can't actually
 carry Cursor's cloud traffic), which is exactly why Cursor is ⛔ here and not ⚠️.
 
@@ -63,20 +63,20 @@ carry Cursor's cloud traffic), which is exactly why Cursor is ⛔ here and not �
 
 ## 3. Launcher — **N/A (no usable route), and why**
 
-There is **no Redactly launcher for Cursor.** Stating the structural reason rather than shipping a
+There is **no Scrimward launcher for Cursor.** Stating the structural reason rather than shipping a
 recipe is the deliverable here.
 
 - **No client-side base-URL hook reaches the proxy.** Cursor's only override is *Settings → Models →
   OpenAI API Key → Override OpenAI Base URL*. That value is consumed by **Cursor's backend**, which
   makes the outbound provider call. Cursor's docs require the URL be **publicly accessible and HTTPS**;
   `http://127.0.0.1:PORT` is rejected/unreachable by design (a browser/IDE-class anti-localhost guard).
-  So the canonical Redactly move — `export ANTHROPIC_BASE_URL=http://127.0.0.1:PORT` / a project
+  So the canonical Scrimward move — `export ANTHROPIC_BASE_URL=http://127.0.0.1:PORT` / a project
   `settings.local.json` — **has no analogue** in Cursor.
 - **A public HTTPS tunnel does NOT rescue it (no "tunnel theater").** You *could* expose the proxy via
   `https://<id>.ngrok.io` and Cursor's backend would reach it. But by then **Cursor's cloud has already
   ingested and (absent Privacy Mode) retained your raw prompt + files in cleartext** — the tunnel only
   sanitizes the **Cursor-cloud → provider** leg, which is *after* the leak you care about. It also
-  protects only **chat models** (Composer/Apply/Tab are excluded — see below). Redactly will **not**
+  protects only **chat models** (Composer/Apply/Tab are excluded — see below). Scrimward will **not**
   document this as an install path; it provides false assurance.
 - **Agent / Composer / Inline-Edit / Apply / Tab have no BYOK at all.** Per Cursor docs, "Custom API
   keys only work with chat models. Tab completion continues using Cursor's built-in models." The agentic
@@ -95,7 +95,7 @@ platforms.
 
 ## 4. Auth handling — **N/A, with the verified gotcha that matters**
 
-Redactly's auth model is *forward the tool's auth header verbatim* from the local proxy to the
+Scrimward's auth model is *forward the tool's auth header verbatim* from the local proxy to the
 provider. Cursor never presents its auth to anything on your machine, so there is nothing to forward.
 
 - **BYOK (chat models only):** your OpenAI/Anthropic API key is **uploaded to Cursor's backend** —
@@ -108,7 +108,7 @@ provider. Cursor never presents its auth to anything on your machine, so there i
   *"Cursor's Zero Data Retention policy does not apply when you use your own API keys… Your data
   handling follows the privacy policy of your chosen provider."* So the **only** base-URL lever Cursor
   exposes (BYOK) **disables** the one retention protection Cursor offered. Using the hook trades a
-  no-retention path for a retained one — the opposite of Redactly's goal.
+  no-retention path for a retained one — the opposite of Scrimward's goal.
 
 *Scope honesty:* we verified the **ZDR void under BYOK**. We do **not** assert that Privacy Mode and
 BYOK are mutually exclusive (unverified) — see §7 / §9.
@@ -138,25 +138,25 @@ to.
 
 ## 6. Fail-closed gating — **refuse, do not route**
 
-For ⛔ tools the only correct fail-closed posture is: **do not route Cursor through Redactly, and tell
+For ⛔ tools the only correct fail-closed posture is: **do not route Cursor through Scrimward, and tell
 the user why.** "Fail-closed" here means *fail to install*, not *forward unredacted*.
 
-- **Refusal (the gate):** `redactly wrap cursor` (and any auto-detection of Cursor) MUST hard-refuse
+- **Refusal (the gate):** `scrimward wrap cursor` (and any auto-detection of Cursor) MUST hard-refuse
   with a plain-language reason and the §7 alternatives — never print a localhost base-URL, never
   emit a tunnel recipe, never report "configured". Exit non-zero.
 
   ```
-  $ redactly wrap cursor
+  $ scrimward wrap cursor
   ⛔ Cursor cannot be protected by a local redaction proxy.
      Cursor's cloud assembles your prompt before any provider call, so your
-     prompt + files are ingested in cleartext before Redactly could see them.
+     prompt + files are ingested in cleartext before Scrimward could see them.
      → Use a supported tool for real redaction: claude-code | aider | cline
      → For Cursor itself, your only lever is Cursor's own Privacy Mode (see docs).
      Refusing rather than giving you false assurance.   [exit 2]
   ```
 
 - **Anti-theater assertion (negative probe):** if a user manually pasted the proxy URL into Cursor's
-  override anyway, Redactly should **detect Cursor-origin traffic and warn**, not pretend it's covered.
+  override anyway, Scrimward should **detect Cursor-origin traffic and warn**, not pretend it's covered.
   Two signals: (a) the override requires public HTTPS, so any request arriving at the proxy with a
   Cursor-cloud source IP / `User-Agent` is, by definition, **post-ingestion** — flag it as "already
   leaked upstream, not protected"; (b) the `127.0.0.1` route will simply never receive Cursor traffic,
@@ -186,13 +186,13 @@ the assembled request. There is no seam to insert redaction before the data is r
   retained copy at the model provider once BYOK is in play.
 - **A public HTTPS tunnel on the BYOK chat path** *(do NOT rely on this):* sanitizes only the
   **Cursor-cloud → provider** leg, only for chat models, and **only after** Cursor already ingested
-  your raw prompt + files. It is **not** protection for the data you actually care about and Redactly
+  your raw prompt + files. It is **not** protection for the data you actually care about and Scrimward
   will not ship it. Also note: enabling BYOK **voids Cursor's ZDR** (§4), so this path can be *net
   worse* than just using Cursor's built-in models under Privacy Mode.
 
-**If you need real pre-provider redaction, switch tools (all ✅ supported by Redactly):**
+**If you need real pre-provider redaction, switch tools (all ✅ supported by Scrimward):**
 
-| Use Cursor for… | Redactly-supported equivalent | Why it works |
+| Use Cursor for… | Scrimward-supported equivalent | Why it works |
 |---|---|---|
 | Terminal/agentic coding | **Claude Code** | `ANTHROPIC_BASE_URL` + project `.claude/settings.local.json` → request built locally, intercepted on `127.0.0.1` |
 | CLI pair-programming, BYO key, multi-model | **Aider** | `OPENAI_API_BASE` + `ANTHROPIC_BASE_URL` via LiteLLM — 100% local, fully interceptable |
@@ -212,8 +212,8 @@ proxy is structurally bypassed.
 
 **Setup**
 1. Plant a high-entropy canary in an open file in a Cursor workspace, e.g.
-   `REDACTLY_CANARY_7f3a9c2e1b8d4f60_AKIA_TESTONLY` (not a real credential; unique, greppable).
-2. Stand up the Redactly proxy on `127.0.0.1:PORT` with request logging (the would-be interception
+   `SCRIMWARD_CANARY_7f3a9c2e1b8d4f60_AKIA_TESTONLY` (not a real credential; unique, greppable).
+2. Stand up the Scrimward proxy on `127.0.0.1:PORT` with request logging (the would-be interception
    point).
 3. Capture **client→Cursor-cloud** egress at the network layer — `mitmproxy`/Charles with the system
    trust store, or a pcap (`tcpdump -i any -w cursor.pcap host <cursor-cloud-host>`). This is the leg
@@ -227,7 +227,7 @@ proxy is structurally bypassed.
 5. **Canary is PRESENT in cleartext on the client→Cursor-cloud leg** → confirms Cursor ingested the
    raw secret before any redaction point could exist. *(This is the leak; it is expected and is the
    point of the test.)*
-6. **The Redactly `127.0.0.1:PORT` log is EMPTY** → confirms no Cursor traffic ever reached the proxy
+6. **The Scrimward `127.0.0.1:PORT` log is EMPTY** → confirms no Cursor traffic ever reached the proxy
    (structural bypass, not a misconfig).
 7. **No placeholder token (`«…_1»`) appears anywhere** → there was no opportunity to mask.
 
@@ -271,7 +271,7 @@ architecture, not the test rig.
 - `tests/test_cli/` — wrap launcher tests exist for claude/codex/copilot/aider/continue/goose/
   openhands/vibe; **no `test_wrap_cursor.py`** (no interception launcher to test).
 
-**Redactly internal**
+**Scrimward internal**
 - `docs/SUPPORTED-TOOLS.md` — Cursor row: ⛔ not protectable (this doc is the build-ready expansion).
 - `README.md` — supported-tools matrix; Cursor ⛔.
 - `docs/VERIFICATION.md` — proxy-vs-hook threat model that this verdict rests on.

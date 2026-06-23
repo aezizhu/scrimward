@@ -6,11 +6,11 @@ argument-hint: <name> <value>
 
 # Add a custom redaction rule
 
-The user wants Redactly to mask a specific value everywhere it appears. Take a short rule NAME and
+The user wants Scrimward to mask a specific value everywhere it appears. Take a short rule NAME and
 the VALUE to hide, then run:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/redactly-py" rules add "<name>" "<value>"
+"${CLAUDE_PLUGIN_ROOT}/bin/scrimward-py" rules add "<name>" "<value>"
 ```
 
 - Add `--regex` if the user gave a pattern rather than a literal string.

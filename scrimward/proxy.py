@@ -22,7 +22,7 @@ Request lifecycle (every outbound request):
 through the redaction pipeline.
 
 This is the deliberate inversion of Headroom's fail-OPEN proxy: where Headroom
-forwards the original on any compression failure, Redactly refuses.
+forwards the original on any compression failure, Scrimward refuses.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def filter_upstream_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
     Strips hop-by-hop + ``host`` + ``content-length`` + ``accept-encoding``
     (see :data:`HOP_BY_HOP_HEADERS`); forwards everything else — crucially the
-    auth headers — **verbatim**. Adds NOTHING (no ``x-redactly-*``, no proxy
+    auth headers — **verbatim**. Adds NOTHING (no ``x-scrimward-*``, no proxy
     fingerprint): the proxy must be invisible to the provider.
 
     Filtering is case-insensitive (HTTP header names are case-insensitive); the
@@ -127,7 +127,7 @@ def _blocked(reason: str, *, status_code: int = 502) -> JSONResponse:
         status_code=status_code,
         content={
             "error": {
-                "type": "redactly_blocked",
+                "type": "scrimward_blocked",
                 "message": reason,
             }
         },
@@ -153,7 +153,7 @@ def create_app(
     *,
     adapters: Sequence[Adapter] | None = None,
 ) -> FastAPI:
-    """Build and return the FastAPI app for the Redactly proxy.
+    """Build and return the FastAPI app for the Scrimward proxy.
 
     Wires:
 
@@ -163,7 +163,7 @@ def create_app(
       ``config.upstream`` with verbatim auth + stripped hop-by-hop headers →
       ``StreamingResponse`` via ``adapter.unmask_stream``.
 
-    ``config`` defaults to :func:`redactly.config.load`. The upstream comes from
+    ``config`` defaults to :func:`scrimward.config.load`. The upstream comes from
     ``config.upstream`` (``REDACT_UPSTREAM``) so tests can point it at a mock.
     ``adapters`` defaults to the built-in registry; tests may inject their own.
     """
@@ -171,7 +171,7 @@ def create_app(
     registry: Sequence[Adapter] = adapters if adapters is not None else ADAPTERS
     upstream = cfg.upstream.rstrip("/")
 
-    app = FastAPI(title="Redactly", version="0.0.1")
+    app = FastAPI(title="Scrimward", version="0.0.1")
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
@@ -282,9 +282,9 @@ def create_app(
 
 
 def _default_app() -> FastAPI:
-    """Build the module-level ``app`` for ``uvicorn redactly.proxy:app``.
+    """Build the module-level ``app`` for ``uvicorn scrimward.proxy:app``.
 
-    Uses :func:`redactly.config.load` (env + rules file) when available. While
+    Uses :func:`scrimward.config.load` (env + rules file) when available. While
     the surrounding scaffold is still stubbed, ``config.load`` raises
     ``NotImplementedError``; we fall back to a concrete default :class:`Config`
     so ``app`` stays importable (the route wiring is independent of how the
@@ -297,5 +297,5 @@ def _default_app() -> FastAPI:
         return create_app(Config())
 
 
-# Module-level ASGI app for ``uvicorn redactly.proxy:app`` and the CLI.
+# Module-level ASGI app for ``uvicorn scrimward.proxy:app`` and the CLI.
 app = _default_app()

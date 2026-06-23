@@ -1,4 +1,4 @@
-# Redactly — capability verification (Claude Code v2.1.185, 2026-06-22)
+# Scrimward — capability verification (Claude Code v2.1.185, 2026-06-22)
 
 > **Scope:** this document covers **Claude Code specifically** — its hook/proxy capabilities and the
 > auth-mode coverage limits for the Anthropic Messages path. Per-tool interceptability for the other

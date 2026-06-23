@@ -1,14 +1,14 @@
 ---
 name: setup
-description: Turn on Redactly — start the local redaction proxy and route this project's AI traffic through it.
+description: Turn on Scrimward — start the local redaction proxy and route this project's AI traffic through it.
 ---
 
-# Turn on Redactly
+# Turn on Scrimward
 
-Run the Redactly setup command with a Bash tool call:
+Run the Scrimward setup command with a Bash tool call:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/redactly-py" setup
+"${CLAUDE_PLUGIN_ROOT}/bin/scrimward-py" setup
 ```
 
 Then tell the user, in plain language: **restart your AI tool now** (exit and re-run `claude`)

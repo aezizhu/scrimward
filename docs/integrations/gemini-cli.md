@@ -1,4 +1,4 @@
-# Redactly Integration — Google Gemini CLI
+# Scrimward Integration — Google Gemini CLI
 
 > **Status:** ⚠️ **PARTIAL → path-to-supported**
 > Fully protectable for all three auth modes via a local fail-closed proxy. The "partial" is driven by *operational* gaps (`--sandbox` does not propagate the base-URL env vars — gemini-cli #2168 — and the 3-mode env matrix), **not** by an unprotectable data path. Google is the provider here; the CLI talks straight to Google's own endpoints with no intermediate vendor backend, so the local proxy genuinely guards the retained copy.
@@ -7,7 +7,7 @@
 
 ## 1. TL;DR verdict
 
-Gemini CLI is **protectable** with the standard Redactly local fail-closed proxy. There is no "own vendor backend" hazard: Google *is* the provider, and the CLI's only network egress for inference is to Google endpoints (`cloudcode-pa.googleapis.com` for OAuth, `generativelanguage.googleapis.com` for API-key, Vertex `aiplatform` for ADC) — a 127.0.0.1 proxy sits directly in that path and redacts the retained copy. The catch is routing: the **default OAuth "Login with Google"** path **ignores `GOOGLE_GEMINI_BASE_URL`** (verified: gemini-cli #15430 and source `createContentGeneratorConfig`) and must instead be pointed with **`CODE_ASSIST_ENDPOINT`** (verified base-URL override in `code_assist/server.ts`). It is ⚠️ rather than ✅ only because `--sandbox` drops these env vars (#2168) — so the hard precondition is **`--sandbox=false`** until that's handled.
+Gemini CLI is **protectable** with the standard Scrimward local fail-closed proxy. There is no "own vendor backend" hazard: Google *is* the provider, and the CLI's only network egress for inference is to Google endpoints (`cloudcode-pa.googleapis.com` for OAuth, `generativelanguage.googleapis.com` for API-key, Vertex `aiplatform` for ADC) — a 127.0.0.1 proxy sits directly in that path and redacts the retained copy. The catch is routing: the **default OAuth "Login with Google"** path **ignores `GOOGLE_GEMINI_BASE_URL`** (verified: gemini-cli #15430 and source `createContentGeneratorConfig`) and must instead be pointed with **`CODE_ASSIST_ENDPOINT`** (verified base-URL override in `code_assist/server.ts`). It is ⚠️ rather than ✅ only because `--sandbox` drops these env vars (#2168) — so the hard precondition is **`--sandbox=false`** until that's handled.
 
 ---
 
@@ -27,12 +27,12 @@ Verified source anchors (gemini-cli `main`, fetched 2026-06-22):
 
 ## 3. Launcher — route the CLI through 127.0.0.1:PORT
 
-The Redactly proxy listens on `http://127.0.0.1:PORT`. **Plain HTTP on loopback is accepted** — `validateBaseUrl` does only `new URL()` with no scheme guard, and the CLI explicitly branches on `baseUrl.startsWith('http://')` (`contentGenerator.ts:360`). **No TLS needed.** (Loopback only — do not bind a LAN IP; the docs scope these overrides to `localhost`/`127.0.0.1`/`[::1]`.)
+The Scrimward proxy listens on `http://127.0.0.1:PORT`. **Plain HTTP on loopback is accepted** — `validateBaseUrl` does only `new URL()` with no scheme guard, and the CLI explicitly branches on `baseUrl.startsWith('http://')` (`contentGenerator.ts:360`). **No TLS needed.** (Loopback only — do not bind a LAN IP; the docs scope these overrides to `localhost`/`127.0.0.1`/`[::1]`.)
 
 ### 3.1 Env vars to set (per mode)
 
 ```bash
-PORT=8788   # Redactly proxy port
+PORT=8788   # Scrimward proxy port
 
 # --- Mode A: OAuth (DEFAULT). GOOGLE_GEMINI_BASE_URL is IGNORED here. ---
 export CODE_ASSIST_ENDPOINT="http://127.0.0.1:${PORT}"
@@ -49,16 +49,16 @@ export GOOGLE_VERTEX_BASE_URL="http://127.0.0.1:${PORT}"
 
 Set **only the var for the mode in use** — setting `CODE_ASSIST_ENDPOINT` while on the API-key path is harmless (unused), but mixing can mask a mis-route. The fail-closed probe (§6) catches the wrong-var case.
 
-> Do **not** use `--proxy` for this. `--proxy` / `HTTPS_PROXY` is a *forward/CONNECT* proxy (`HttpProxyAgent`/`HttpsProxyAgent`, `contentGenerator.ts:360-363`) that tunnels TLS to Google opaquely — it does **not** terminate or expose the body, so Redactly cannot inspect/redact it. The base-URL env vars are the only content hook.
+> Do **not** use `--proxy` for this. `--proxy` / `HTTPS_PROXY` is a *forward/CONNECT* proxy (`HttpProxyAgent`/`HttpsProxyAgent`, `contentGenerator.ts:360-363`) that tunnels TLS to Google opaquely — it does **not** terminate or expose the body, so Scrimward cannot inspect/redact it. The base-URL env vars are the only content hook.
 
 ### 3.2 Idempotent write + restore-on-exit (wrapper script)
 
-Wrap, don't pollute the user's shell rc. `redactly-gemini` launcher:
+Wrap, don't pollute the user's shell rc. `scrimward-gemini` launcher:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-PORT="${REDACTLY_PORT:-8788}"
+PORT="${SCRIMWARD_PORT:-8788}"
 BASE="http://127.0.0.1:${PORT}"
 
 # Snapshot prior values so an interactive session restores cleanly on exit.
@@ -86,9 +86,9 @@ exec gemini --sandbox=false "$@"
 The simplest **idempotent** wiring is process-scoped env (subprocess only) — nothing to clean up because it never touches the parent shell or any file. If a settings-file route is desired instead, write to **project-local** `./.gemini/.env` (preferred — scoped to the repo) rather than `~/.gemini/.env` (global, leaks into every project). Make it idempotent by rewriting the whole managed block between sentinel comments:
 
 ```
-# >>> redactly managed (do not edit) >>>
+# >>> scrimward managed (do not edit) >>>
 CODE_ASSIST_ENDPOINT=http://127.0.0.1:8788
-# <<< redactly managed <<<
+# <<< scrimward managed <<<
 ```
 …and remove exactly that block on teardown (sed between sentinels). gemini-cli loads `.env` from the project tree, falling back to `~/.gemini/.env` then `~/.env`.
 
@@ -108,9 +108,9 @@ CODE_ASSIST_ENDPOINT=http://127.0.0.1:8788
 
 ## 4. Auth handling
 
-Redactly **forwards the inbound auth credential verbatim** — it never mints, exchanges, or refreshes Google tokens. The CLI's own credential cache/refresh keeps working; the proxy only swaps the *request body*, leaving auth headers untouched end to end.
+Scrimward **forwards the inbound auth credential verbatim** — it never mints, exchanges, or refreshes Google tokens. The CLI's own credential cache/refresh keeps working; the proxy only swaps the *request body*, leaving auth headers untouched end to end.
 
-| Mode | Credential | Header on the wire | Redactly action | What breaks / avoid |
+| Mode | Credential | Header on the wire | Scrimward action | What breaks / avoid |
 |---|---|---|---|---|
 | **A. OAuth** | OAuth2 access token (from `~/.gemini/oauth_creds.json`, refreshed by CLI) | `Authorization: Bearer <token>` | **Forward verbatim.** Do not strip/rewrite `Authorization`. | If you drop the header → 401. The CLI refreshes the token itself before each call; the proxy must not cache or pin a token. |
 | **B. API key** | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | **`x-goog-api-key: <key>`** by default; **`Authorization: Bearer <key>`** if `GEMINI_API_KEY_AUTH_MECHANISM=bearer` (`contentGenerator.ts:264-279`) | **Forward whichever header is present, verbatim.** Detect both; do not hardcode `x-goog-api-key`. | Hardcoding only `x-goog-api-key` drops the bearer variant → 401. Also pass through the `?key=` query param if the CLI uses it on some paths. |
@@ -162,7 +162,7 @@ For each outbound SSE frame the proxy emits to the CLI:
 
 ### 5.4 Token split across deltas (reassembly) — *design, not Headroom-verified*
 
-A placeholder token (`«EMAIL_1»`) can be split across two consecutive SSE deltas (`…«EMA` then `IL_1»…`). Naïve per-delta replacement misses it. Redactly reassembly (Redactly-specific; Headroom's `streaming.py` buffering is compression-oriented and not assumed here):
+A placeholder token (`«EMAIL_1»`) can be split across two consecutive SSE deltas (`…«EMA` then `IL_1»…`). Naïve per-delta replacement misses it. Scrimward reassembly (Scrimward-specific; Headroom's `streaming.py` buffering is compression-oriented and not assumed here):
 1. Maintain a per-stream rolling **tail buffer** of un-emitted trailing text whose suffix could be the start of a placeholder (longest possible partial-token prefix, e.g. `len(longest placeholder) - 1` chars).
 2. On each delta, concatenate `tail + new_text`, run the token→secret replacement, then emit everything **up to the last safe boundary** (the last index that cannot be the start of a partial placeholder); retain the remainder as the new tail.
 3. On stream end (or `finishReason` present), flush the tail through replacement and emit.
@@ -178,14 +178,14 @@ This is deterministic and content-hash cacheable, preserving Google's prompt-cac
 
 - Body is not valid JSON / not decompressible / exceeds the inspect size cap.
 - Route is unrecognized (path is neither `…:generateContent`/`…:streamGenerateContent` nor `/v1internal:streamGenerateContent`).
-- Envelope expected wrapped (`/v1internal…`) but `body.request` is absent/not a dict (Headroom returns 400 "missing request payload" here — `gemini.py:767-779`; Redactly should likewise refuse, not forward).
+- Envelope expected wrapped (`/v1internal…`) but `body.request` is absent/not a dict (Headroom returns 400 "missing request payload" here — `gemini.py:767-779`; Scrimward should likewise refuse, not forward).
 - The redactor couldn't be applied to every text field it found.
 
 ### 6.1 Route-live probe (run before declaring the session protected)
 
 The danger is a *silent mis-route* (wrong env var for the mode, or sandbox stripping it → CLI hits Google directly, unredacted). Verify positively:
 
-1. **Proxy up:** `GET http://127.0.0.1:PORT/healthz` (Redactly health endpoint) returns 200 with the proxy's build id.
+1. **Proxy up:** `GET http://127.0.0.1:PORT/healthz` (Scrimward health endpoint) returns 200 with the proxy's build id.
 2. **CLI actually points at us:** run a one-shot through the wrapper with a unique **canary** prompt and assert the proxy's request log shows that canary arriving on the expected route (`/v1internal:streamGenerateContent` for Mode A, `/v1beta/models/*:streamGenerateContent` for B/C). If the canary does **not** hit the proxy within the timeout → the route is dead (wrong var / sandbox) → **refuse to proceed**, surface "route not active — unredacted egress possible."
 3. **Sandbox assertion:** if `--sandbox` is on / `GEMINI_SANDBOX` is set and not `false`, **refuse** (known #2168 leak).
 
@@ -197,7 +197,7 @@ Treat "I configured the env var" as **not** proof — only a captured request ar
 
 To call Gemini CLI **fully supported**, handle each concretely:
 
-1. **Sandbox propagation (#2168) — primary blocker.** Today: hard-require `--sandbox=false`. To reach ✅: either (a) inject the base-URL env vars into the sandbox profile (mount/whitelist `CODE_ASSIST_ENDPOINT` / `GOOGLE_*_BASE_URL` into the Docker/Podman/Seatbelt env), or (b) run the Redactly proxy *inside* the sandbox's network namespace and point the CLI at it there, or (c) gate-and-refuse when sandbox is on (current behavior). Verify by canary probe from *inside* the sandbox.
+1. **Sandbox propagation (#2168) — primary blocker.** Today: hard-require `--sandbox=false`. To reach ✅: either (a) inject the base-URL env vars into the sandbox profile (mount/whitelist `CODE_ASSIST_ENDPOINT` / `GOOGLE_*_BASE_URL` into the Docker/Podman/Seatbelt env), or (b) run the Scrimward proxy *inside* the sandbox's network namespace and point the CLI at it there, or (c) gate-and-refuse when sandbox is on (current behavior). Verify by canary probe from *inside* the sandbox.
 2. **Three-mode auto-detection.** The wrapper picks the env var from auth state; harden it so a user who switches auth mid-session (e.g. exports `GEMINI_API_KEY` after starting on OAuth) doesn't end up with a stale/ignored override. The §6 probe is the safety net — keep it mandatory.
 3. **API-key auth-mechanism variants.** Forward both `x-goog-api-key` and `Authorization: Bearer` (`GEMINI_API_KEY_AUTH_MECHANISM=bearer`) and the `?key=` query form; add a regression test per variant.
 4. **Tool-call payloads.** Text redaction leaves `functionCall`/`functionResponse` args untouched by design. If a deployment requires redacting secrets *inside* tool args, add a typed structured-field redactor and re-test tool execution — otherwise document that tool-arg content is out of scope.
@@ -212,12 +212,12 @@ When 1–5 are handled and the §8 canary test passes for all three modes (incl.
 Goal: prove the **retained copy at Google never contains the secret**, the provider sees a faithful **placeholder**, and the **user's local reply is fully un-masked**. Run once per mode (A/B/C).
 
 **Setup**
-1. Start the Redactly proxy on `127.0.0.1:8788` with egress capture enabled (the proxy logs the exact bytes it forwards upstream — that captured upstream body is the ground truth, not a `mitmproxy` of TLS-to-Google).
-2. Plant a high-entropy canary in the vault domain, e.g. `CANARY_SECRET="REDACTLY-CANARY-$(openssl rand -hex 16)"` mapped to a stable token like `«CANARY_1»`. Use a value that is **not** a natural language word so a false "absent" can't be a tokenizer artifact.
+1. Start the Scrimward proxy on `127.0.0.1:8788` with egress capture enabled (the proxy logs the exact bytes it forwards upstream — that captured upstream body is the ground truth, not a `mitmproxy` of TLS-to-Google).
+2. Plant a high-entropy canary in the vault domain, e.g. `CANARY_SECRET="SCRIMWARD-CANARY-$(openssl rand -hex 16)"` mapped to a stable token like `«CANARY_1»`. Use a value that is **not** a natural language word so a false "absent" can't be a tokenizer artifact.
 
 **Exercise (per mode)**
 3. Launch via the §3.2 wrapper for that mode (`CODE_ASSIST_ENDPOINT` / `GOOGLE_GEMINI_BASE_URL` / `GOOGLE_VERTEX_BASE_URL`), `--sandbox=false`.
-4. Prompt: `Repeat this exactly: my key is REDACTLY-CANARY-<hex>` (forces the secret into both request *and* the model's streamed reply).
+4. Prompt: `Repeat this exactly: my key is SCRIMWARD-CANARY-<hex>` (forces the secret into both request *and* the model's streamed reply).
 
 **Assert**
 5. **Egress redaction (request):** in the captured upstream body, assert `CANARY_SECRET` is **ABSENT** and the placeholder `«CANARY_1»` is **PRESENT** at the right path:

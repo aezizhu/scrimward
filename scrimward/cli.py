@@ -1,12 +1,12 @@
-"""Redactly command-line interface.
+"""Scrimward command-line interface.
 
-``main`` is the click group referenced by ``[project.scripts] redactly``.
+``main`` is the click group referenced by ``[project.scripts] scrimward``.
 
 Commands:
 
-- ``redactly proxy [--host] [--port] [--upstream]`` — run the redaction proxy
+- ``scrimward proxy [--host] [--port] [--upstream]`` — run the redaction proxy
   under uvicorn in the foreground.
-- ``redactly wrap claude [-- claude-args…]`` — ensure the proxy is up, point the
+- ``scrimward wrap claude [-- claude-args…]`` — ensure the proxy is up, point the
   wrapped tool at it, run it as a subprocess, restore on exit.
 
 The ``wrap`` flow models Headroom's launcher: it sets ``ANTHROPIC_BASE_URL`` AND
@@ -35,13 +35,13 @@ from .config import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_UPSTREAM, ENV_RULES, ENV
 CLAUDE_SETTINGS_LOCAL = Path(".claude") / "settings.local.json"
 CLAUDE_BASE_URL_KEY = "ANTHROPIC_BASE_URL"
 
-# Global Redactly state (rules live here so the proxy daemon reads them no
+# Global Scrimward state (rules live here so the proxy daemon reads them no
 # matter which directory it was spawned from).
-REDACTLY_HOME = Path.home() / ".redactly"
-RULES_PATH = REDACTLY_HOME / "rules.json"
+SCRIMWARD_HOME = Path.home() / ".scrimward"
+RULES_PATH = SCRIMWARD_HOME / "rules.json"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Per-tool launch config for `redactly wrap <tool>`. Each tool gets its own
+# Per-tool launch config for `scrimward wrap <tool>`. Each tool gets its own
 # proxy instance + upstream, isolated by port, so one redactor can serve
 # tools that talk to different providers.
 WRAP_TOOLS: dict[str, dict] = {
@@ -63,9 +63,9 @@ WRAP_TOOLS: dict[str, dict] = {
 
 
 @click.group()
-@click.version_option(__version__, prog_name="redactly")
+@click.version_option(__version__, prog_name="scrimward")
 def main() -> None:
-    """Redactly — mask your secrets before they leave your machine."""
+    """Scrimward — mask your secrets before they leave your machine."""
 
 
 @main.command("proxy")
@@ -92,7 +92,7 @@ def proxy_cmd(host: str, port: int, upstream: str | None) -> None:
 @click.option("--port", default=None, type=int, help="Override the proxy port (default: per-tool).")
 @click.argument("tool_args", nargs=-1, type=click.UNPROCESSED)
 def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
-    """Run an AI coding tool (claude, codex) with its traffic routed through Redactly."""
+    """Run an AI coding tool (claude, codex) with its traffic routed through Scrimward."""
     spec = WRAP_TOOLS[tool]
     port = port or spec["port"]
     base_url = f"http://{DEFAULT_HOST}:{port}{spec['base_suffix']}"
@@ -106,7 +106,7 @@ def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
 
     binary = shutil.which(tool) or tool
     click.echo(
-        f"redactly: routing {tool} via {spec['env']}={base_url} -> {spec['upstream']} (fail-closed)",
+        f"scrimward: routing {tool} via {spec['env']}={base_url} -> {spec['upstream']} (fail-closed)",
         err=True,
     )
     try:
@@ -121,7 +121,7 @@ def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
 
 
 def _healthz(port: int, host: str = DEFAULT_HOST) -> bool:
-    """Return ``True`` if a Redactly proxy answers ``/healthz`` on ``host:port``."""
+    """Return ``True`` if a Scrimward proxy answers ``/healthz`` on ``host:port``."""
     try:
         with urllib.request.urlopen(f"http://{host}:{port}/healthz", timeout=1.5) as resp:
             return resp.status == 200
@@ -141,7 +141,7 @@ def _ensure_proxy(
     """
     if _healthz(port, host):
         return
-    log_dir = Path.home() / ".redactly"
+    log_dir = Path.home() / ".scrimward"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "proxy.log"
     proxy_env = os.environ.copy()
@@ -150,12 +150,12 @@ def _ensure_proxy(
         proxy_env[ENV_UPSTREAM] = upstream
     with open(log_path, "ab") as log:
         subprocess.Popen(
-            [sys.executable, "-m", "redactly.cli", "proxy", "--host", host, "--port", str(port)],
+            [sys.executable, "-m", "scrimward.cli", "proxy", "--host", host, "--port", str(port)],
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
             env=proxy_env,
-            cwd=str(_REPO_ROOT),  # so `-m redactly.cli` resolves the package
+            cwd=str(_REPO_ROOT),  # so `-m scrimward.cli` resolves the package
         )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -163,7 +163,7 @@ def _ensure_proxy(
             return
         time.sleep(0.5)
     raise SystemExit(
-        f"redactly: proxy did not become healthy on {host}:{port} within "
+        f"scrimward: proxy did not become healthy on {host}:{port} within "
         f"{timeout:.0f}s (see {log_path}). Refusing to run the tool unprotected."
     )
 
@@ -240,7 +240,7 @@ def _is_routed(port: int, settings_path: Path | None = None) -> bool:
 
 
 def _read_rules_doc() -> dict:
-    REDACTLY_HOME.mkdir(parents=True, exist_ok=True)
+    SCRIMWARD_HOME.mkdir(parents=True, exist_ok=True)
     if not RULES_PATH.exists():
         return {"rules": [], "allowlist": {"literals": [], "patterns": []}}
     try:
@@ -250,7 +250,7 @@ def _read_rules_doc() -> dict:
 
 
 def _write_rules_doc(doc: dict) -> None:
-    REDACTLY_HOME.mkdir(parents=True, exist_ok=True)
+    SCRIMWARD_HOME.mkdir(parents=True, exist_ok=True)
     RULES_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
@@ -262,8 +262,8 @@ def setup_cmd(port: int) -> None:
         _write_rules_doc({"rules": [], "allowlist": {"literals": [], "patterns": []}})
     _ensure_proxy(port)
     _write_base_url(_proxy_url(port))
-    click.echo(f"redactly: proxy healthy on {_proxy_url(port)}; routing written to {CLAUDE_SETTINGS_LOCAL}.")
-    click.echo("redactly: RESTART your AI tool (exit and re-run it) for routing to take effect.")
+    click.echo(f"scrimward: proxy healthy on {_proxy_url(port)}; routing written to {CLAUDE_SETTINGS_LOCAL}.")
+    click.echo("scrimward: RESTART your AI tool (exit and re-run it) for routing to take effect.")
 
 
 @main.command("status")
@@ -274,12 +274,12 @@ def status_cmd(port: int) -> None:
     click.echo(f"this project routed        : {_is_routed(port)}")
     click.echo(f"custom rules               : {len(_read_rules_doc().get('rules', []))}")
     if not _is_routed(port):
-        click.echo("→ NOT protected. Run `redactly setup` (or /redactly:setup) then restart your tool.")
+        click.echo("→ NOT protected. Run `scrimward setup` (or /scrimward:setup) then restart your tool.")
 
 
 @main.group("rules")
 def rules_grp() -> None:
-    """Manage custom redaction rules (~/.redactly/rules.json)."""
+    """Manage custom redaction rules (~/.scrimward/rules.json)."""
 
 
 @rules_grp.command("add")
@@ -298,7 +298,7 @@ def rules_add(name: str, value: str, regex: bool, prefix: str) -> None:
         {"name": name, "pattern": value if regex else _re.escape(value), "token_prefix": prefix}
     )
     _write_rules_doc(doc)
-    click.echo(f"redactly: added rule {name!r} (prefix {prefix}). Restart the proxy to apply.")
+    click.echo(f"scrimward: added rule {name!r} (prefix {prefix}). Restart the proxy to apply.")
 
 
 @rules_grp.command("list")
@@ -317,7 +317,7 @@ def rules_remove(name: str) -> None:
     before = len(doc.get("rules", []))
     doc["rules"] = [r for r in doc.get("rules", []) if r.get("name") != name]
     _write_rules_doc(doc)
-    click.echo(f"redactly: removed {before - len(doc['rules'])} rule(s) named {name!r}.")
+    click.echo(f"scrimward: removed {before - len(doc['rules'])} rule(s) named {name!r}.")
 
 
 @main.group("hook")
@@ -348,12 +348,12 @@ def hook_session_start(port: int) -> None:
     except SystemExit:
         pass
     if _is_routed(port):
-        msg = f"🛡 Redactly active: this project's cloud traffic routes through the local redaction proxy (127.0.0.1:{port})."
+        msg = f"🛡 Scrimward active: this project's cloud traffic routes through the local redaction proxy (127.0.0.1:{port})."
     elif _configured_base_url() == _proxy_url(port):
-        msg = "🛡 Redactly is configured; if tool use is blocked the proxy isn't healthy yet — run `redactly status` or re-run /redactly:setup."
+        msg = "🛡 Scrimward is configured; if tool use is blocked the proxy isn't healthy yet — run `scrimward status` or re-run /scrimward:setup."
     else:
         msg = (
-            "⚠ Redactly is installed but NOT protecting this session yet. Run /redactly:setup, then RESTART your "
+            "⚠ Scrimward is installed but NOT protecting this session yet. Run /scrimward:setup, then RESTART your "
             "tool. Until routing is active, tool use is blocked (fail-closed) so nothing leaks unredacted."
         )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": msg}}))
@@ -366,15 +366,15 @@ def hook_guard(port: int) -> None:
     payload = _read_hook_input()
     if _is_routed(port):
         return  # allow
-    # Bootstrap escape hatch: never block Redactly's OWN setup/status commands,
-    # or the user couldn't run /redactly:setup to turn routing on.
+    # Bootstrap escape hatch: never block Scrimward's OWN setup/status commands,
+    # or the user couldn't run /scrimward:setup to turn routing on.
     if payload.get("tool_name") in ("Bash", "Shell"):
         cmd = (payload.get("tool_input") or {}).get("command", "")
-        if "redactly" in cmd:
+        if "scrimward" in cmd:
             return
     reason = (
-        "Redactly fail-closed guard: this session is NOT routed through the local redaction proxy, so anything "
-        "sent to the cloud could leak secrets/PII. Run /redactly:setup and restart your AI tool to activate "
+        "Scrimward fail-closed guard: this session is NOT routed through the local redaction proxy, so anything "
+        "sent to the cloud could leak secrets/PII. Run /scrimward:setup and restart your AI tool to activate "
         "redaction, then retry."
     )
     print(

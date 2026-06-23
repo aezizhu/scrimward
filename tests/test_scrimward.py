@@ -1,4 +1,4 @@
-"""Redactly test suite — unit tests + the load-bearing security tests.
+"""Scrimward test suite — unit tests + the load-bearing security tests.
 
 The two tests that matter most for a *redaction* proxy:
 
@@ -22,13 +22,13 @@ import threading
 import httpx
 import pytest
 
-from redactly.adapters.anthropic import AnthropicAdapter
-from redactly.adapters.openai_responses import OpenAIResponsesAdapter
-from redactly.config import Allowlist, Config
-from redactly.detectors import detect
-from redactly.engine import Redactor
-from redactly.proxy import create_app
-from redactly.vault import Vault
+from scrimward.adapters.anthropic import AnthropicAdapter
+from scrimward.adapters.openai_responses import OpenAIResponsesAdapter
+from scrimward.config import Allowlist, Config
+from scrimward.detectors import detect
+from scrimward.engine import Redactor
+from scrimward.proxy import create_app
+from scrimward.vault import Vault
 
 # UTF-8 bytes for the guillemets that delimit a token («…»).
 _TOKEN_BYTES_RE = re.compile(rb"\xc2\xab.*?\xc2\xbb", re.DOTALL)

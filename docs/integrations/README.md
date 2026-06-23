@@ -1,6 +1,6 @@
 # Tool integrations
 
-Build-ready, per-tool integration specs for Redactly. Each covers: the **launcher** (exact
+Build-ready, per-tool integration specs for Scrimward. Each covers: the **launcher** (exact
 env/config to route the tool through the local proxy), **auth handling** per mode, the
 **provider body adapter** (what to redact, what to un-mask, what to *never* touch),
 **fail-closed gating**, and a **canary leak test**.

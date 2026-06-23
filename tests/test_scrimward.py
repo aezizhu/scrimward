@@ -503,6 +503,11 @@ def test_gemini_unmask_split_token():
 # When REDACT_IMAGES is on AND Vision is available, the Anthropic adapter
 # redacts an image in place (every text region + face → opaque box, re-verified)
 # instead of refusing. When off / unavailable / un-redactable → still fail closed.
+#
+# NOTE: the live-redaction tests are skipif(not _VISION) — on non-macOS CI they
+# SKIP, so "all passed" there does NOT exercise actual redaction. The fail-closed
+# paths (disabled / url / redaction-error) and the adapter fail-closed wiring run
+# everywhere; the live-Vision tests run only on macOS/Apple Silicon.
 
 _VISION = image_redaction_available()
 
@@ -540,20 +545,20 @@ def _anthropic_image_body(b64: str, media_type: str = "image/png") -> bytes:
 
 @pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
 def test_image_redactor_strict_fill_removes_text():
-    from scrimward.image_redactor import _reverify_max_conf, _stack, redact_image_bytes
+    from scrimward.image_redactor import _detect_boxes, _stack, redact_image_bytes
 
     raw = _text_png("SECRET AKIAIOSFODNN7EXAMPLE")
-    out = redact_image_bytes(raw, "image/png")  # raises if any text survives
+    out = redact_image_bytes(raw, "image/png")  # raises if any region survives
     assert out and out != raw
     vision, nsdata, _img, _draw = _stack()
-    assert _reverify_max_conf(vision, nsdata, out) == 0.0  # no readable text remains
+    assert _detect_boxes(vision, nsdata, out) == []  # no text/face regions remain
 
 
 @pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
 def test_anthropic_redacts_image_when_enabled():
     import base64
 
-    from scrimward.image_redactor import _reverify_max_conf, _stack
+    from scrimward.image_redactor import _detect_boxes, _stack
 
     raw = _text_png("SECRET AKIAIOSFODNN7EXAMPLE")
     b64 = base64.b64encode(raw).decode()
@@ -562,7 +567,37 @@ def test_anthropic_redacts_image_when_enabled():
     new_b64 = json.loads(out)["messages"][0]["content"][0]["source"]["data"]
     assert new_b64 != b64  # image bytes replaced with the redacted version
     vision, nsdata, _img, _draw = _stack()
-    assert _reverify_max_conf(vision, nsdata, base64.b64decode(new_b64)) == 0.0
+    assert _detect_boxes(vision, nsdata, base64.b64decode(new_b64)) == []
+
+
+@pytest.mark.skipif(not _VISION, reason="Apple Vision unavailable (non-macOS)")
+def test_image_redactor_refuses_when_fill_misses(monkeypatch):
+    # Force a fill MISS — every box drawn as a 0-area rect — and prove the
+    # re-verify safety net REFUSES. This is the line that makes images
+    # fail-closed; without this test an inverted/dead re-verify passes silently.
+    import scrimward.image_redactor as ir
+
+    monkeypatch.setattr(ir, "_to_pixel_rect", lambda *a, **k: (0, 0, 0, 0))
+    raw = _text_png("SECRET AKIAIOSFODNN7EXAMPLE")
+    with pytest.raises(ir.ImageRedactionError):
+        ir.redact_image_bytes(raw, "image/png")
+
+
+def test_anthropic_image_fails_closed_on_redaction_error(monkeypatch):
+    # Runs everywhere (no Vision needed): if redaction raises for ANY reason,
+    # the adapter must fail closed (block the whole request), never forward.
+    import scrimward.adapters.anthropic as ant
+    from scrimward.image_redactor import ImageRedactionError
+
+    monkeypatch.setattr(ant, "image_redaction_available", lambda: True)
+
+    def _boom(*a, **k):
+        raise ImageRedactionError("simulated redaction failure")
+
+    monkeypatch.setattr(ant, "redact_image_bytes", _boom)
+    red = Redactor(Vault("s"), redact_images=True)
+    with pytest.raises(Exception):
+        AnthropicAdapter().redact_request(_anthropic_image_body("AAAA"), red)
 
 
 def test_anthropic_image_fails_closed_when_disabled():

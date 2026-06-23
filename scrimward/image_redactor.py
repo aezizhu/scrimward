@@ -12,8 +12,10 @@ When enabled the strategy is deliberately STRICT and geometry-first:
 - Use BOTH recognition (VNRecognizeText) and detection (VNDetectTextRectangles —
   detection recall > recognition recall) plus face rectangles, so detected-but-
   unreadable text is still covered.
-- After filling, run a SECOND OCR pass and REFUSE (raise) if any readable text
-  survives — the fail-closed safety net.
+- After filling, RE-SCAN the filled image with the SAME detectors (recognition
+  + detection + faces) and REFUSE (raise) on ANY residual region — the
+  fail-closed safety net, with no confidence tolerance (text re-reading even at
+  low confidence is still readable, so it must not ship).
 
 Recall ceiling (documented, not hidden): text Vision cannot detect AT ALL (very
 low contrast, extreme rotation, tiny fonts) may be missed. Callers who cannot
@@ -25,9 +27,6 @@ from __future__ import annotations
 import functools
 import io
 
-# Residual-text confidence at/above which the re-verify pass means the fill
-# missed something → refuse (fail-closed).
-_REVERIFY_MIN_CONF = 0.30
 # Pad each fill box by this fraction of its size (OCR clips glyph edges + anti-alias).
 _PAD = 0.10
 # Provider media types we can decode + re-encode losslessly enough to redact.
@@ -96,15 +95,6 @@ def _detect_boxes(vision, nsdata_cls, raw: bytes) -> list[tuple[float, float, fl
     return boxes
 
 
-def _reverify_max_conf(vision, nsdata_cls, raw: bytes) -> float:
-    recognize = vision.VNRecognizeTextRequest.alloc().init()
-    recognize.setRecognitionLevel_(vision.VNRequestTextRecognitionLevelAccurate)
-    return max(
-        (float(o.confidence()) for o in _run(vision, nsdata_cls, raw, recognize)),
-        default=0.0,
-    )
-
-
 def _to_pixel_rect(box, width: int, height: int) -> tuple[int, int, int, int]:
     """Normalized bottom-left box → padded integer top-left pixel rect."""
     x, y, w, h = box
@@ -152,10 +142,12 @@ def redact_image_bytes(raw: bytes, media_type: str) -> bytes:
     img.save(out, fmt)
     redacted = out.getvalue()
 
-    # Fail-closed safety net: no readable text may survive the fill.
-    residual = _reverify_max_conf(vision, nsdata_cls, redacted)
-    if residual >= _REVERIFY_MIN_CONF:
+    # Fail-closed safety net: re-scan the FILLED image with the SAME detectors.
+    # A clean fill leaves zero regions; ANY residual (recognized text, detected
+    # text rectangle, or face) means the fill missed something → refuse. No
+    # confidence tolerance — pass-1 fills unconditionally, so any survivor is real.
+    if _detect_boxes(vision, nsdata_cls, redacted):
         raise ImageRedactionError(
-            f"readable text survived redaction (conf {residual:.2f}); refusing to forward"
+            "text or a face survived redaction; refusing to forward (fail-closed)"
         )
     return redacted

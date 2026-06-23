@@ -207,6 +207,7 @@ def create_app(
             user_rules=cfg.user_rules,
             allowlist=cfg.allowlist,
             redact_images=cfg.redact_images,
+            detect_entropy=cfg.detect_entropy,
         )
 
         try:

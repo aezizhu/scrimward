@@ -65,9 +65,18 @@ class Redactor:
         user_rules: tuple[UserRule, ...] = (),
         allowlist: Allowlist | None = None,
         redact_images: bool = False,
+        detect_entropy: bool = False,
     ) -> None:
         self.vault = vault
-        self.detectors = detectors
+        # The shapeless high-entropy catch-all is OPT-IN (REDACT_ENTROPY): it has
+        # high recall but masks git SHAs / content hashes / UUIDs that pepper
+        # coding prompts, so it's filtered out unless explicitly enabled.
+        self.detect_entropy = detect_entropy
+        self.detectors = (
+            detectors
+            if detect_entropy
+            else tuple(d for d in detectors if d.name != "high_entropy_string")
+        )
         self.user_rules = user_rules
         self.allowlist = allowlist if allowlist is not None else Allowlist()
         # Per-request image policy carried alongside the text redactor: when True
@@ -135,7 +144,7 @@ class Redactor:
         if not ranked:
             return s
 
-        spans = self._resolve_overlaps_ranked(ranked)
+        spans = self._resolve_overlaps_ranked(s, ranked)
         if not spans:
             return s
 
@@ -222,57 +231,74 @@ class Redactor:
     # ------------------------------------------------------------------
     # Overlap resolution
     # ------------------------------------------------------------------
-    def _resolve_overlaps(self, spans: list[Span]) -> list[Span]:
-        """Drop overlapping spans, keeping the most-specific (earliest) match.
-
-        Detectors are ordered most-specific-first, so when two spans cover the
-        same bytes the one whose detector was listed earlier wins. Returns a
-        non-overlapping list sorted by ``start``.
-
-        This convenience overload accepts bare spans (no external priority tag)
-        and assigns priority by their position in the list — callers that need
-        cross-detector priority should use the internal ranked path, which
-        :meth:`redact_text` does.
-        """
+    def _resolve_overlaps(self, s: str, spans: list[Span]) -> list[Span]:
+        """Convenience overload over bare spans (priority = list position)."""
         ranked = [_RankedSpan(span=span, priority=i) for i, span in enumerate(spans)]
-        return self._resolve_overlaps_ranked(ranked)
+        return self._resolve_overlaps_ranked(s, ranked)
 
-    def _resolve_overlaps_ranked(self, ranked: list[_RankedSpan]) -> list[Span]:
-        """Resolve overlaps over priority-tagged spans → non-overlapping spans.
+    def _resolve_overlaps_ranked(self, s: str, ranked: list[_RankedSpan]) -> list[Span]:
+        """Merge overlapping priority-tagged spans into non-overlapping UNION spans.
 
-        Selection order (a greedy interval pick):
+        Overlapping spans are coalesced into one masked region (the union) rather
+        than keeping only the most-specific one and leaking the discarded span's
+        flanking bytes. This is the load-bearing fix that lets the high-entropy
+        catch-all safely overlap a vendor match: the whole run is masked, not
+        just the vendor sub-span.
 
-        1. Highest priority wins (smallest ``priority`` — most specific / a user
-           rule beats a built-in beats a broader built-in).
-        2. Tie → leftmost (smallest ``start``).
-        3. Tie → longest (largest ``end`` — leftmost-longest).
-        4. Tie → most-specific producer again is already covered by (1); final
-           tiebreak is the matched text so the order is total and deterministic.
+        Algorithm — a max-end sweep computing connected components (transitive
+        overlap closure), order-independent:
 
-        Zero-width spans (``start == end``) are discarded — there is nothing to
-        mask and they would wedge the splice. The result is sorted by ``start``.
+        1. Drop zero-width spans (``start == end``) — nothing to mask; they would
+           wedge the splice.
+        2. Sort by geometry ``(start, end, text)``; clustering is purely geometric.
+        3. Sweep: a span whose ``start`` is **strictly** less than the running
+           cluster end joins it (strict ``<`` reproduces :meth:`_overlaps` —
+           adjacency ``next.start == cur_end`` starts a NEW cluster, so two
+           back-to-back secrets stay separate).
+        4. Emit one ``Span`` per cluster covering ``[cstart, cend)`` whose
+           ``text`` is the exact union substring ``s[cstart:cend]`` (so the vault
+           mints/unmasks the right bytes), and whose ``name``/``prefix`` come from
+           the **lowest-priority-number (most-specific)** contributor — never from
+           the matched text — so identical inputs always coalesce to identical
+           tokens (prompt-cache stability).
         """
-        # Total, deterministic ordering. We pick winners greedily off the front
-        # of this list and discard anything that overlaps an already-picked span.
-        ordered = sorted(
-            (r for r in ranked if r.span.end > r.span.start),
-            key=lambda r: (
-                r.priority,        # most-specific / user-rule first
-                r.span.start,      # leftmost
-                -r.span.end,       # longest (leftmost-longest)
-                r.span.text,       # final deterministic tiebreak
-            ),
-        )
+        items = [r for r in ranked if r.span.end > r.span.start]
+        if not items:
+            return []
+        items.sort(key=lambda r: (r.span.start, r.span.end, r.span.text))
 
-        chosen: list[Span] = []
-        for r in ordered:
-            span = r.span
-            if any(self._overlaps(span, kept) for kept in chosen):
-                continue
-            chosen.append(span)
+        clusters: list[list[_RankedSpan]] = []
+        current: list[_RankedSpan] = [items[0]]
+        current_end = items[0].span.end
+        for r in items[1:]:
+            if r.span.start < current_end:  # overlap → same cluster
+                current.append(r)
+                current_end = max(current_end, r.span.end)
+            else:  # disjoint or merely adjacent → new cluster
+                clusters.append(current)
+                current = [r]
+                current_end = r.span.end
+        clusters.append(current)
 
-        chosen.sort(key=lambda sp: sp.start)
-        return chosen
+        out: list[Span] = []
+        for members in clusters:
+            cstart = members[0].span.start  # members are start-sorted
+            cend = max(m.span.end for m in members)
+            winner = min(
+                members,
+                key=lambda r: (r.priority, r.span.start, -r.span.end, r.span.text),
+            )
+            out.append(
+                Span(
+                    start=cstart,
+                    end=cend,
+                    name=winner.span.name,
+                    prefix=winner.span.prefix,
+                    text=s[cstart:cend],
+                )
+            )
+        out.sort(key=lambda sp: sp.start)
+        return out
 
     @staticmethod
     def _overlaps(a: Span, b: Span) -> bool:

@@ -16,7 +16,9 @@ Names/order/prefixes are the contract the engine imports; the patterns are here.
 from __future__ import annotations
 
 import base64
+import math
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -93,6 +95,34 @@ def _iban_ok(value: str) -> bool:
     return int("".join(digits)) % 97 == 1
 
 
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+def _high_entropy_ok(value: str) -> bool:
+    """True if ``value`` is a high-entropy run worth masking (the catch-all gate).
+
+    Closes the *unknown-prefix* secret class. Calibrated to detect-secrets: a
+    base64-charset run needs Shannon entropy > 4.5 bits/char, an all-hex run
+    > 3.0. Two benign shapes are rejected here (others are handled by the
+    candidate regex / the engine allowlist): pure-numeric runs (IDs, timestamps,
+    phone digits — max digit entropy is log2(10)=3.32, so a uniform 20-digit ID
+    clears the hex limit; they are NEVER a credible secret) and low-variety runs.
+    Full bare hex digests (git SHA / md5 / sha256) DO fire by design — sparing
+    those exact lengths would also spare real 128/256-bit hex keys — and are
+    suppressed per-value via the engine allowlist, not here.
+    """
+    v = value.rstrip("=")  # trailing base64 padding carries no entropy signal
+    n = len(v)
+    if n < 20:
+        return False
+    if v.isdigit():  # pure-numeric is unmaskable noise, never a secret
+        return False
+    counts = Counter(v)
+    entropy = -sum((c / n) * math.log2(c / n) for c in counts.values())
+    limit = 3.0 if all(ch in _HEX_CHARS for ch in v) else 4.5
+    return entropy > limit  # strict > : a value exactly at the limit is benign
+
+
 # --- the registry (MOST-SPECIFIC-FIRST) -----------------------------------
 #
 # An empty ``pattern`` means the detector is intentionally disabled (too
@@ -162,12 +192,24 @@ BUILTINS: tuple[Detector, ...] = (
     Detector("phone", r"\+\d[\d\s().\-]{7,}\d", "PHONE"),
     Detector("mac_address", r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b", "MAC"),
     Detector("ip_address", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IP", _ipv4_ok),
-    # --- generic keyword-anchored catch-all — MUST be last (lowest priority) ---
+    # --- generic keyword-anchored catch-all — lowest priority but for the entropy one ---
     Detector(
         "generic_assigned_secret",
         r"(?i:password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)"
         r"[\"'\s]*[=:]\s*[\"']?[A-Za-z0-9+/_\-]{12,}[\"']?",
         "GENERIC_SECRET",
+    ),
+    # --- shapeless high-entropy catch-all — ABSOLUTE LAST (lowest priority) ---
+    # Claims only the bytes no higher-confidence detector classified. The negative
+    # lookbehind anchors the true left edge of a base64 run ('+'/'/' are non-word,
+    # so \b would mis-anchor); ={0,2} consumes trailing padding into group(0).
+    # HARD-DEPENDS on the union-merge resolver (R1): a vendor match inside a wider
+    # entropy run must mask the whole union, else the flanking bytes leak.
+    Detector(
+        "high_entropy_string",
+        r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{20,}={0,2}",
+        "HIGH_ENTROPY",
+        _high_entropy_ok,
     ),
 )
 

@@ -29,10 +29,10 @@ from scrimward.adapters.anthropic import AnthropicAdapter
 from scrimward.adapters.gemini import GeminiAdapter
 from scrimward.adapters.openai_chat import OpenAIChatAdapter
 from scrimward.adapters.openai_responses import OpenAIResponsesAdapter
-from scrimward.config import Allowlist, Config, load_rules
-from scrimward.detectors import BUILTINS, detect
+from scrimward.config import Allowlist, Config, UserRule, load_rules
+from scrimward.detectors import BUILTINS, Span, detect
 from scrimward.image_redactor import image_redaction_available
-from scrimward.engine import Redactor
+from scrimward.engine import Redactor, _RankedSpan
 from scrimward.proxy import create_app
 from scrimward.vault import Vault
 
@@ -164,6 +164,49 @@ def test_redactor_with_encrypt_vault_roundtrip():
 # --- engine ---------------------------------------------------------------
 
 
+# --- R1: overlap resolver merges overlapping spans into their UNION ---------
+#
+# Old behavior dropped the lower-priority overlapping span, leaking its flanking
+# bytes. Now overlapping spans coalesce into one masked region; the merged
+# token's prefix comes from the most-specific (lowest-priority) contributor.
+
+
+def _rs(start, end, prefix, priority, s):
+    return _RankedSpan(span=Span(start, end, prefix.lower(), prefix, s[start:end]), priority=priority)
+
+
+def test_union_merge_narrow_inside_broad():
+    s = "x" * 50
+    out = Redactor(Vault("s"))._resolve_overlaps_ranked(s, [_rs(0, 50, "BROAD", 9, s), _rs(10, 20, "NARROW", 2, s)])
+    assert len(out) == 1
+    assert (out[0].start, out[0].end, out[0].prefix, out[0].text) == (0, 50, "NARROW", s[0:50])
+
+
+def test_union_merge_adjacent_not_merged():
+    s = "y" * 20
+    out = Redactor(Vault("s"))._resolve_overlaps_ranked(s, [_rs(0, 10, "A", 1, s), _rs(10, 20, "B", 1, s)])
+    assert [(o.start, o.end, o.prefix) for o in out] == [(0, 10, "A"), (10, 20, "B")]
+
+
+def test_union_merge_transitive_min_priority_in_middle():
+    s = "z" * 26
+    ranked = [_rs(0, 10, "A", 5, s), _rs(8, 18, "B", 1, s), _rs(16, 26, "C", 5, s)]
+    out = Redactor(Vault("s"))._resolve_overlaps_ranked(s, ranked)
+    assert len(out) == 1
+    assert (out[0].start, out[0].end, out[0].prefix) == (0, 26, "B")
+
+
+def test_union_merge_deterministic_under_shuffle():
+    s = "w" * 26
+    base = [_rs(0, 10, "A", 5, s), _rs(8, 18, "B", 1, s), _rs(16, 26, "C", 5, s)]
+    r = Redactor(Vault("s"))
+    results = [
+        [(o.start, o.end, o.prefix, o.text) for o in r._resolve_overlaps_ranked(s, [base[i] for i in perm])]
+        for perm in ([0, 1, 2], [2, 1, 0], [1, 0, 2])
+    ]
+    assert results[0] == results[1] == results[2]
+
+
 def test_engine_redacts_and_allowlist():
     out = Redactor(Vault("s")).redact_text("mail alice@example.com")
     assert "alice@example.com" not in out
@@ -187,6 +230,37 @@ def test_load_rules_parses_allowlist_hashes(tmp_path):
     p.write_text(json.dumps({"allowlist": {"hashes": ["deadbeef" * 8]}}))
     _rules, allow = load_rules(p)
     assert "deadbeef" * 8 in allow.hashes
+
+
+def test_entropy_detector_masks_unprefixed_secret():
+    # The catch-all's primary value: a high-entropy secret with NO vendor prefix
+    # that no other detector would match still gets masked.
+    secret = _j("Xb9KpQ2mZ7vL4nR8", "tY1wC3eF6gH0jK5aB7dN2sV9uW")
+    out = Redactor(Vault("s"), detect_entropy=True).redact_text(f"my custom token is {secret} ok")
+    assert secret not in out
+    assert "«HIGH_ENTROPY_" in out
+
+
+def test_entropy_detector_is_opt_in():
+    # Default-off: a high-entropy run (e.g. a git SHA-like blob) is NOT masked,
+    # so coding prompts full of hashes are untouched until REDACT_ENTROPY is set.
+    secret = _j("Xb9KpQ2mZ7vL4nR8", "tY1wC3eF6gH0jK5aB7dN2sV9uW")
+    out = Redactor(Vault("s")).redact_text(f"my custom token is {secret} ok")
+    assert secret in out  # untouched by default
+
+
+def test_entropy_union_merge_prevents_flanking_leak():
+    # A narrow high-priority match (a user rule) inside a broad high-entropy run:
+    # without R1 union-merge the flanking high-entropy bytes would LEAK. R1+R2
+    # together mask the whole run.
+    rule = (UserRule(name="midmark", pattern="MID", token_prefix="MARK"),)
+    left = _j("Xb9KpQ2m", "ZvL4nR8t")
+    right = _j("Y1wC3eF6", "gH0jK5aB7dN2sV9uW")
+    blob = left + "MID" + right
+    out = Redactor(Vault("s"), user_rules=rule, detect_entropy=True).redact_text(f"see {blob} ok")
+    assert left not in out and right not in out  # flanking high-entropy masked — no leak
+    assert "MID" not in out  # token prefix is MARK, so the matched literal is truly gone
+    assert "«MARK_" in out  # the whole run coalesced into one merged token
 
 
 def test_multi_secret_canary_none_leak():
@@ -1075,6 +1149,24 @@ _DETECTOR_CASES: dict[str, tuple[list[str], list[str]]] = {
     "iban": (["DE89370400440532013000", "GB29NWBK60161331926819"], ["HELLO12345678901234"]),
     "mac_address": (["00:1A:2B:3C:4D:5E"], ["00:1A:2B:3C:4D"]),
     "generic_assigned_secret": ([_j("password=", "hunter2hunter2hunter2")], ["token: short"]),
+    # high-entropy catch-all: real unprefixed secrets fire; benign high-entropy
+    # dev strings (dashed UUID / short SHA / pure-numeric / low-variety) do not.
+    # (Full bare hex digests DO fire by design — suppressed via the allowlist, not
+    # the validator — so they are NOT listed as negatives here.)
+    "high_entropy_string": (
+        [
+            _j("Xb9KpQ2mZ7vL4nR8", "tY1wC3eF6gH0jK5aB7dN2sV9uW"),
+            _j("aZ4kP9mLqW2nX7vR", "8tY3eC6gH1jB5dF0sK4uN9wQ2r"),
+            _j("9f8e7d6c5b4a3928", "1706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0"),
+        ],
+        [
+            "550e8400-e29b-41d4-a716-446655440000",  # dashed UUID — dashes split it below the floor
+            "dcfa623",  # short SHA — below the 20-char floor
+            "84920173650192847561",  # 20-digit ID — pure-numeric, dropped unconditionally
+            "aaaaaaaaaaaaaaaaaaaaaaaa",  # repeated char — zero entropy
+            "abcdefabcdefabcdefabcdefa",  # low-variety run — entropy < limit
+        ],
+    ),
 }
 
 

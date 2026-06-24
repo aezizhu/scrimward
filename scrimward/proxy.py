@@ -27,6 +27,7 @@ forwards the original on any compression failure, Scrimward refuses.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 
@@ -132,6 +133,36 @@ def _blocked(reason: str, *, status_code: int = 502) -> JSONResponse:
             }
         },
     )
+
+
+def _unmask_node(node: object, vault: Vault) -> object:
+    if isinstance(node, str):
+        return vault.unmask(node)
+    if isinstance(node, dict):
+        for k in list(node.keys()):
+            node[k] = _unmask_node(node[k], vault)
+        return node
+    if isinstance(node, list):
+        for i in range(len(node)):
+            node[i] = _unmask_node(node[i], vault)
+        return node
+    return node
+
+
+def _unmask_body(body: bytes, vault: Vault) -> bytes:
+    """Un-mask a NON-streaming reply body (stream:false → plain JSON).
+
+    Parses the JSON and restores tokens in every string leaf, then re-serializes
+    (so a restored secret containing quotes/backslashes is correctly escaped). A
+    body that is not JSON is un-masked as raw text.
+    """
+    text = body.decode("utf-8", errors="replace")
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return vault.unmask(text).encode("utf-8")
+    _unmask_node(obj, vault)
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _pick_adapter(
@@ -249,13 +280,24 @@ def create_app(
         # is bound as belt-and-braces for any helper that reaches for the
         # active vault, and the upstream response + client are closed when the
         # stream finishes or the client disconnects.
+        # A reply is only un-masked by the SSE rewriter when it IS an event
+        # stream; a non-streaming (stream:false) reply is plain JSON, where the
+        # SSE rewriter finds no data: events and would leave «TOKEN» un-restored.
+        is_sse = "text/event-stream" in (upstream_resp.headers.get("content-type") or "").lower()
+
         async def _stream() -> AsyncIterator[bytes]:
             ctx_token = set_current_vault(vault)
             try:
-                async for chunk in adapter.unmask_stream(
-                    upstream_resp.aiter_bytes(), vault
-                ):
-                    yield chunk
+                if is_sse:
+                    async for chunk in adapter.unmask_stream(
+                        upstream_resp.aiter_bytes(), vault
+                    ):
+                        yield chunk
+                else:
+                    body = bytearray()
+                    async for chunk in upstream_resp.aiter_bytes():
+                        body.extend(chunk)
+                    yield _unmask_body(bytes(body), vault)
             finally:
                 # Reset in the SAME context the token was minted in (the
                 # generator's). Resetting from a different context would raise.

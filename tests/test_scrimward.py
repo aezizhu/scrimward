@@ -49,7 +49,7 @@ def _run(coro):
 class _MockUpstream:
     """Threaded mock provider: records request bodies, echoes the token in SSE."""
 
-    def __init__(self) -> None:
+    def __init__(self, json_reply: bool = False) -> None:
         self.received: list[dict] = []
         received = self.received
 
@@ -63,16 +63,23 @@ class _MockUpstream:
                 received.append({"body": body, "headers": dict(self.headers)})
                 m = _TOKEN_BYTES_RE.search(body)
                 echo = m.group(0).decode("utf-8") if m else "hello"
-                sse = (
-                    "event: content_block_delta\n"
-                    'data: {"type":"content_block_delta","delta":'
-                    '{"type":"text_delta","text":%s}}\n\n'
-                    "event: message_stop\n"
-                    'data: {"type":"message_stop"}\n\n'
-                ) % json.dumps(f"reply: {echo}")
-                payload = sse.encode("utf-8")
+                if json_reply:  # non-streaming application/json reply (H1)
+                    payload = json.dumps({"content": f"reply: {echo}"}).encode("utf-8")
+                    ctype = "application/json"
+                else:
+                    payload = (
+                        (
+                            "event: content_block_delta\n"
+                            'data: {"type":"content_block_delta","delta":'
+                            '{"type":"text_delta","text":%s}}\n\n'
+                            "event: message_stop\n"
+                            'data: {"type":"message_stop"}\n\n'
+                        )
+                        % json.dumps(f"reply: {echo}")
+                    ).encode("utf-8")
+                    ctype = "text/event-stream"
                 self.send_response(200)
-                self.send_header("content-type", "text/event-stream")
+                self.send_header("content-type", ctype)
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -503,6 +510,34 @@ def test_proxy_canary_e2e_encrypt_vault():
         assert canary.encode() not in recv_body  # secret absent from the wire
         assert b"~" in recv_body  # an encrypt token «PREFIX~hex» went upstream
         assert canary in resp_text  # decrypted locally back to the real value
+    finally:
+        mock.stop()
+
+
+def test_unmask_body_restores_tokens_in_json_and_raw():
+    from scrimward.proxy import _unmask_body
+
+    v = Vault("s")
+    tok = v.token_for("alice@example.com", "EMAIL")
+    out = _unmask_body(json.dumps({"content": f"hi {tok}", "n": [{"x": tok}]}).encode(), v)
+    assert b"alice@example.com" in out and tok.encode() not in out
+    raw = _unmask_body(f"plain {tok} text".encode(), v)  # non-JSON → raw unmask
+    assert b"alice@example.com" in raw
+
+
+def test_proxy_canary_e2e_non_streaming_reply():
+    # H1: a stream:false (application/json) reply must have its tokens restored.
+    mock = _MockUpstream(json_reply=True)
+    try:
+        app = create_app(Config(upstream=mock.url))
+        canary = "alice.secret@example.com"
+        body = json.dumps(
+            {"model": "x", "messages": [{"role": "user", "content": f"email me at {canary}"}], "stream": False}
+        ).encode()
+        status, resp_text = _run(_post(app, "/v1/messages", body, {"content-type": "application/json"}))
+        assert status == 200
+        assert canary.encode() not in mock.received[0]["body"]  # outbound masked
+        assert canary in resp_text  # the non-streaming reply was un-masked locally
     finally:
         mock.stop()
 
@@ -1321,6 +1356,13 @@ def test_zero_width_char_evasion_is_redacted():
     assert "AKIA" not in out  # the key (zero-width stripped) was detected + masked
     assert "​" not in out  # the zero-width char is gone from the forwarded text
     assert "«AWS_KEY_" in out
+
+
+def test_normalize_does_not_corrupt_secret_free_content():
+    # M3: NFKC/Cf normalization is for DETECTION only — a secret-free string must
+    # be forwarded byte-for-byte, not silently folded (full-width → ASCII).
+    text = "ｆｕｌｌｗｉｄｔｈ note — no secrets here, just a café résumé"
+    assert Redactor(Vault("s")).redact_text(text) == text
 
 
 def test_fullwidth_homoglyph_evasion_is_redacted():

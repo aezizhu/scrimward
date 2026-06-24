@@ -138,14 +138,16 @@ class Redactor:
         if not s:
             return s
 
-        # Defeat unicode evasion BEFORE detecting (and forward the normalized
-        # text): NFKC folds full-width / compatibility homoglyphs back to ASCII,
-        # and stripping format (Cf) chars removes zero-width spaces / BOM / soft
-        # hyphens an attacker can splice into a secret to dodge every regex
-        # (e.g. "AKIA​...."). The model never needs these characters.
-        s = self._normalize(s)
+        # Normalize a COPY for DETECTION only — NFKC folds full-width /
+        # compatibility homoglyphs and the Cf-strip removes zero-width spaces / BOM
+        # / soft hyphens an attacker splices into a secret to dodge every regex
+        # ("AKIA​…"). But we must NOT corrupt secret-free content: when nothing is
+        # masked we forward the ORIGINAL bytes verbatim. Only when a secret IS
+        # found do we splice on (and emit) the normalized string — and that string
+        # is being heavily rewritten anyway, with the secret region masked.
+        norm = self._normalize(s)
 
-        ranked = self._gather(s)
+        ranked = self._gather(norm)
         if not ranked:
             return s
 
@@ -153,11 +155,11 @@ class Redactor:
         if not ranked:
             return s
 
-        spans = self._resolve_overlaps_ranked(s, ranked)
+        spans = self._resolve_overlaps_ranked(norm, ranked)
         if not spans:
             return s
 
-        return self._splice(s, spans)
+        return self._splice(norm, spans)
 
     def redact_object(self, obj: object) -> object:
         """Deny-by-default recursive backstop: redact EVERY string leaf in a

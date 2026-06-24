@@ -283,6 +283,39 @@ def test_gemini_redacts_function_response_output():
     assert b"leak@secret.example.com" not in out
 
 
+def test_guard_bootstrap_escape_matches_invocation_not_substring():
+    # C2: the PreToolUse guard's bootstrap escape must allow only a scrimward
+    # INVOCATION, not any command that merely CONTAINS "scrimward" (the repo
+    # lives at ~/Desktop/scrimward/, so a substring check disables the guard).
+    from scrimward.cli import _is_scrimward_bootstrap
+
+    assert _is_scrimward_bootstrap("scrimward setup")
+    assert _is_scrimward_bootstrap("bin/scrimward-py status")
+    assert _is_scrimward_bootstrap("/Users/x/bin/scrimward-py hook guard")
+    assert _is_scrimward_bootstrap("ENV=1 scrimward setup")
+    assert not _is_scrimward_bootstrap("cat ~/Desktop/scrimward/.env")
+    assert not _is_scrimward_bootstrap("printenv  # scrimward")
+    assert not _is_scrimward_bootstrap("rm -rf /tmp/x")
+
+
+def test_vendor_keys_caught_when_glued_to_word_chars():
+    # C8: a vendor key concatenated to adjacent word chars (no separator) must
+    # still fire — \b anchoring let `prefixAKIA…` / `AKIA…suffix` evade.
+    red = Redactor(Vault("s"))
+    aws = _j("AKIA", "IOSFODNN7EXAMPLE")
+    assert aws not in red.redact_text("baseUrl+" + "prefixword" + aws)  # leading glue
+    assert aws not in red.redact_text(aws + "gluedsuffix")  # trailing glue
+    gh = _j("ghp_", "abcdefghijklmnopqrstuvwxyz0123456789AB")
+    assert gh not in red.redact_text("x" + gh)
+
+
+def test_short_labeled_secret_masked_in_default_mode():
+    # C9: an explicitly-labeled credential with a 6-11 char value forwarded raw.
+    red = Redactor(Vault("s"))
+    assert "Tiger123" not in red.redact_text("config password=Tiger123 ok")
+    assert "hunter2" not in red.redact_text("token: hunter2 here")
+
+
 def test_engine_redacts_and_allowlist():
     out = Redactor(Vault("s")).redact_text("mail alice@example.com")
     assert "alice@example.com" not in out

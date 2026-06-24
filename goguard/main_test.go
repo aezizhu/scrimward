@@ -27,6 +27,20 @@ func TestDecideBootstrapEscapeAllowsScrimwardBash(t *testing.T) {
 	}
 }
 
+func TestDecideBootstrapEscapeIsInvocationNotSubstring(t *testing.T) {
+	for _, c := range []string{"scrimward setup", "bin/scrimward-py status", "ENV=1 scrimward setup"} {
+		if out, _ := decide(false, "Bash", c); out != nil {
+			t.Fatalf("%q should be allowed; got %q", c, out)
+		}
+	}
+	// The audit's bypass: a command that merely CONTAINS scrimward must be DENIED.
+	for _, c := range []string{"cat ~/Desktop/scrimward/.env", "printenv  # scrimward", "rm -rf /tmp/x"} {
+		if out, _ := decide(false, "Bash", c); out == nil {
+			t.Fatalf("%q must be DENIED — substring-only must not escape the guard", c)
+		}
+	}
+}
+
 func TestDecideDeniesUnroutedToolUse(t *testing.T) {
 	out, err := decide(false, "Edit", "")
 	if err != nil {

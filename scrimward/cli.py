@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -128,6 +129,18 @@ def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
 
 
 # --- helpers --------------------------------------------------------------
+
+
+# A bootstrap command is one whose EXECUTABLE is scrimward / scrimward-py (after
+# optional env-assignments and a path prefix) — NOT any command that merely
+# contains the word "scrimward", which would disable the guard across the repo's
+# own ~/Desktop/scrimward/ tree (`cat ~/Desktop/scrimward/.env`) or via a comment.
+_SCRIMWARD_INVOCATION = re.compile(r"^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?scrimward(?:-py)?(?:\s|$)")
+
+
+def _is_scrimward_bootstrap(command: str) -> bool:
+    """True only if ``command`` actually invokes the scrimward CLI."""
+    return bool(_SCRIMWARD_INVOCATION.match(command or ""))
 
 
 def _healthz(port: int, host: str = DEFAULT_HOST) -> bool:
@@ -380,7 +393,7 @@ def hook_guard(port: int) -> None:
     # or the user couldn't run /scrimward:setup to turn routing on.
     if payload.get("tool_name") in ("Bash", "Shell"):
         cmd = (payload.get("tool_input") or {}).get("command", "")
-        if "scrimward" in cmd:
+        if _is_scrimward_bootstrap(cmd):
             return
     reason = (
         "Scrimward fail-closed guard: this session is NOT routed through the local redaction proxy, so anything "

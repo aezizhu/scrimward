@@ -130,7 +130,12 @@ def _high_entropy_ok(value: str) -> bool:
 # skips empty patterns.
 BUILTINS: tuple[Detector, ...] = (
     # --- high-confidence vendor prefixes (most-specific first) ---
-    Detector("aws_access_key", r"\b(?:AKIA|ASIA|ABIA|ACCA|A3T[0-9A-Z])[0-9A-Z]{16}\b", "AWS_KEY"),
+    # The DISTINCTIVE-prefix detectors are deliberately UNANCHORED (no \b): the
+    # prefix itself is the FP guard, and \b let a key glued to adjacent word
+    # chars evade (`prefixAKIA…`, `AKIA…suffix`, base64/JSON concatenation). The
+    # two-char-prefix hex detectors (Twilio AC/SK, Mailgun key-) KEEP \b — there
+    # the prefix is too weak, so unanchoring would over-fire inside hex blobs.
+    Detector("aws_access_key", r"(?:AKIA|ASIA|ABIA|ACCA|A3T[0-9A-Z])[0-9A-Z]{16}", "AWS_KEY"),
     # Re-enabled keyword-anchored (gitleaks/detect-secrets pattern): a BARE
     # 40-char base64 over-fires, but an AWS_SECRET_ACCESS_KEY assignment is
     # unambiguous. The keyword is the FP guard; the whole "key=value" is masked.
@@ -139,33 +144,33 @@ BUILTINS: tuple[Detector, ...] = (
         r"(?i:aws_secret_access_key|aws_secret_key)[\"'\s]*[=:]\s*[\"']?[A-Za-z0-9/+]{40}",
         "AWS_SECRET",
     ),
-    Detector("github_token", r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b", "GH_TOKEN"),
-    Detector("github_fine_grained_pat", r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b", "GH_PAT"),
-    Detector("gitlab_pat", r"\bglpat-[A-Za-z0-9_-]{20,}\b", "GITLAB_PAT"),
-    Detector("anthropic_key", r"\bsk-ant-[A-Za-z0-9_-]{16,}\b", "ANTHROPIC_KEY"),
-    Detector("openai_key", r"\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\b", "OPENAI_KEY"),
-    Detector("stripe_secret_key", r"\b[rs]k_live_[A-Za-z0-9]{24,}\b", "STRIPE_KEY"),
-    Detector("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", "SLACK_TOKEN"),
-    Detector("slack_app_token", r"\bxapp-[0-9]-[A-Za-z0-9]+-[0-9]+-[A-Za-z0-9]+\b", "SLACK_APP"),
+    Detector("github_token", r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}", "GH_TOKEN"),
+    Detector("github_fine_grained_pat", r"github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}", "GH_PAT"),
+    Detector("gitlab_pat", r"glpat-[A-Za-z0-9_-]{20,}", "GITLAB_PAT"),
+    Detector("anthropic_key", r"sk-ant-[A-Za-z0-9_-]{16,}", "ANTHROPIC_KEY"),
+    Detector("openai_key", r"sk-(?!ant-)[A-Za-z0-9_-]{20,}", "OPENAI_KEY"),
+    Detector("stripe_secret_key", r"[rs]k_live_[A-Za-z0-9]{24,}", "STRIPE_KEY"),
+    Detector("slack_token", r"xox[baprs]-[A-Za-z0-9-]{10,}", "SLACK_TOKEN"),
+    Detector("slack_app_token", r"xapp-[0-9]-[A-Za-z0-9]+-[0-9]+-[A-Za-z0-9]+", "SLACK_APP"),
     Detector(
         "slack_webhook_url",
-        r"\bhttps://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]{24}\b",
+        r"https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]{24}",
         "SLACK_WEBHOOK",
     ),
-    Detector("google_api_key", r"\bAIza[0-9A-Za-z_-]{35}\b", "GOOGLE_KEY"),
-    Detector("google_oauth_access_token", r"\bya29\.[A-Za-z0-9_-]{20,}\b", "GOOGLE_OAUTH"),
-    Detector("npm_token", r"\bnpm_[A-Za-z0-9]{36}\b", "NPM_TOKEN"),
-    Detector("pypi_token", r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}\b", "PYPI_TOKEN"),
-    Detector("huggingface_token", r"\bhf_[A-Za-z0-9]{34}\b", "HF_TOKEN"),
-    Detector("digitalocean_token", r"\bdo[oprt]_v1_[a-f0-9]{64}\b", "DO_TOKEN"),
-    Detector("sendgrid_key", r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b", "SENDGRID_KEY"),
-    Detector("shopify_access_token", r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b", "SHOPIFY_TOKEN"),
-    Detector("linear_api_key", r"\blin_api_[A-Za-z0-9]{40}\b", "LINEAR_KEY"),
+    Detector("google_api_key", r"AIza[0-9A-Za-z_-]{35}", "GOOGLE_KEY"),
+    Detector("google_oauth_access_token", r"ya29\.[A-Za-z0-9_-]{20,}", "GOOGLE_OAUTH"),
+    Detector("npm_token", r"npm_[A-Za-z0-9]{36}", "NPM_TOKEN"),
+    Detector("pypi_token", r"pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}", "PYPI_TOKEN"),
+    Detector("huggingface_token", r"hf_[A-Za-z0-9]{34}", "HF_TOKEN"),
+    Detector("digitalocean_token", r"do[oprt]_v1_[a-f0-9]{64}", "DO_TOKEN"),
+    Detector("sendgrid_key", r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}", "SENDGRID_KEY"),
+    Detector("shopify_access_token", r"shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}", "SHOPIFY_TOKEN"),
+    Detector("linear_api_key", r"lin_api_[A-Za-z0-9]{40}", "LINEAR_KEY"),
+    Detector("square_access_token", r"(?:sq0atp-|EAAA)[A-Za-z0-9_-]{22,}", "SQUARE_TOKEN"),
+    Detector("notion_token", r"(?:secret_|ntn_)[A-Za-z0-9]{43,50}", "NOTION_TOKEN"),
     Detector("twilio_account_sid", r"\bAC[a-f0-9]{32}\b", "TWILIO_SID"),
     Detector("twilio_api_key_sid", r"\bSK[a-f0-9]{32}\b", "TWILIO_KEY"),
-    Detector("square_access_token", r"\b(?:sq0atp-|EAAA)[A-Za-z0-9_-]{22,}\b", "SQUARE_TOKEN"),
     Detector("mailgun_key", r"\bkey-[a-f0-9]{32}\b", "MAILGUN_KEY"),
-    Detector("notion_token", r"\b(?:secret_|ntn_)[A-Za-z0-9]{43,50}\b", "NOTION_TOKEN"),
     # --- structural secrets ---
     Detector(
         "private_key",
@@ -196,7 +201,7 @@ BUILTINS: tuple[Detector, ...] = (
     Detector(
         "generic_assigned_secret",
         r"(?i:password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)"
-        r"[\"'\s]*[=:]\s*[\"']?[A-Za-z0-9+/_\-]{12,}[\"']?",
+        r"[\"'\s]*[=:]\s*[\"']?[A-Za-z0-9+/_\-]{6,}[\"']?",
         "GENERIC_SECRET",
     ),
     # --- shapeless high-entropy catch-all — ABSOLUTE LAST (lowest priority) ---

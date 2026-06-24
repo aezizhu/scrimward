@@ -24,9 +24,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"time"
 )
+
+// A bootstrap command is one whose EXECUTABLE is scrimward / scrimward-py (after
+// optional env-assignments and a path prefix) — NOT any command that merely
+// CONTAINS "scrimward" (the repo lives at ~/Desktop/scrimward/, so a substring
+// check would disable the guard across its own tree). Kept in sync with cli.py.
+var scrimwardInvocation = regexp.MustCompile(`^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?scrimward(?:-py)?(?:\s|$)`)
 
 const defaultPort = 8788
 
@@ -49,9 +55,10 @@ func decide(routed bool, toolName, command string) ([]byte, error) {
 	if routed {
 		return nil, nil // allow
 	}
-	// Bootstrap escape: never block scrimward's own setup/status, or the user
-	// could not run /scrimward:setup to turn routing on.
-	if (toolName == "Bash" || toolName == "Shell") && strings.Contains(command, "scrimward") {
+	// Bootstrap escape: never block scrimward's OWN setup/status invocation, or
+	// the user could not run /scrimward:setup to turn routing on. Match the
+	// invocation, not contains-anywhere (see scrimwardInvocation).
+	if (toolName == "Bash" || toolName == "Shell") && scrimwardInvocation.MatchString(command) {
 		return nil, nil
 	}
 	var out hookOutput

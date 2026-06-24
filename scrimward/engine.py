@@ -195,7 +195,16 @@ class Redactor:
             return node
         if isinstance(node, str):
             return self.redact_text(node)  # bare top-level string (no key context)
-        return node  # int / float / bool / None — nothing to redact
+        if isinstance(node, bool):
+            return node  # bool is an int subclass but is never a secret
+        if isinstance(node, int):
+            # A secret can be sent as a bare JSON number (a Luhn-valid card). Mask
+            # a stringified copy; if it changed, keep the masked string (the leaf
+            # carried a secret) — otherwise leave the number untouched.
+            text = str(node)
+            masked = self.redact_text(text)
+            return masked if masked != text else node
+        return node  # float / None — nothing to redact
 
     def _is_opaque(self, parent: dict, key: object, value: str) -> bool:
         """True ONLY with positive structural evidence that ``value`` is binary /

@@ -143,15 +143,18 @@ class OpenAIChatAdapter:
     async def unmask_stream(
         self, aiter_bytes: AsyncIterator[bytes], vault: Vault
     ) -> AsyncIterator[bytes]:
-        """Un-mask ``choices[].delta.content`` tokens, cross-chunk safe.
+        """Un-mask ``choices[].delta.content`` AND ``delta.tool_calls[].function.
+        arguments`` tokens, cross-chunk safe.
 
-        SSE-event reassembly (byte buffer) defends against UTF-8/event splits;
-        a text carry holds back any trailing open ``«…`` token tail until its
-        ``»`` arrives in a later chunk. ``data: [DONE]`` and non-content events
-        pass through verbatim; a residual carry is flushed at stream end.
+        A model that received a masked «TOKEN» echoes it back — into reply text OR
+        into a tool call it streams, which the LOCAL tool must receive RESTORED.
+        Each token tail is carry-buffered until its closing ``»`` arrives. Carry
+        is held PER TARGET — keyed by (choice index, "content" | tool_call index) —
+        so a split token in one field/choice can't corrupt another (n>1 / parallel
+        tool calls). A residual carry is flushed at stream end.
         """
         sse_buf = bytearray()
-        token_carry = ""
+        carries: dict[str, str] = {}
 
         async for chunk in aiter_bytes:
             if not chunk:
@@ -165,48 +168,61 @@ class OpenAIChatAdapter:
                 event_bytes = bytes(sse_buf[:idx])
                 terminator = bytes(sse_buf[idx : idx + term_len])
                 del sse_buf[: idx + term_len]
-                out, token_carry = self._rewrite_event(
-                    event_bytes, terminator, vault, token_carry
-                )
+                out, carries = self._rewrite_event(event_bytes, terminator, vault, carries)
                 yield out
 
         if sse_buf:
-            out, token_carry = self._rewrite_event(bytes(sse_buf), b"", vault, token_carry)
+            out, carries = self._rewrite_event(bytes(sse_buf), b"", vault, carries)
             yield out
-        if token_carry:
-            yield vault.unmask(token_carry).encode("utf-8")
+        residual = "".join(carries.values())
+        if residual:
+            yield vault.unmask(residual).encode("utf-8")
 
     def _rewrite_event(
-        self, event_bytes: bytes, terminator: bytes, vault: Vault, token_carry: str
-    ) -> tuple[bytes, str]:
+        self, event_bytes: bytes, terminator: bytes, vault: Vault, carries: dict[str, str]
+    ) -> tuple[bytes, dict[str, str]]:
         passthrough = event_bytes + terminator
         _name, data_str = _parse_sse_event(event_bytes)
         if data_str is None or data_str == "[DONE]":
-            if data_str == "[DONE]" and token_carry:
-                return vault.unmask(token_carry).encode("utf-8") + passthrough, ""
-            return passthrough, token_carry
+            if data_str == "[DONE]" and carries:
+                flushed = vault.unmask("".join(carries.values())).encode("utf-8")
+                return flushed + passthrough, {}
+            return passthrough, carries
 
         try:
             obj = json.loads(data_str)
         except (json.JSONDecodeError, ValueError):
-            return passthrough, token_carry
+            return passthrough, carries
 
         choices = obj.get("choices") if isinstance(obj, dict) else None
         if not isinstance(choices, list):
-            return passthrough, token_carry
+            return passthrough, carries
 
         changed = False
-        new_carry = token_carry
-        for choice in choices:
+        for ci, choice in enumerate(choices):
             delta = choice.get("delta") if isinstance(choice, dict) else None
-            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                combined = new_carry + delta["content"]
-                safe, new_carry = _split_unmaskable(combined)
+            if not isinstance(delta, dict):
+                continue
+            cidx = choice.get("index", ci) if isinstance(choice, dict) else ci  # stable across events
+            if isinstance(delta.get("content"), str):
+                key = f"{cidx}:content"
+                combined = carries.get(key, "") + delta["content"]
+                safe, carries[key] = _split_unmaskable(combined)
                 delta["content"] = vault.unmask(safe)
                 changed = True
+            tool_calls = delta.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    fn = tc.get("function") if isinstance(tc, dict) else None
+                    if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                        key = f"{cidx}:tc:{tc.get('index', 0)}"
+                        combined = carries.get(key, "") + fn["arguments"]
+                        safe, carries[key] = _split_unmaskable(combined)
+                        fn["arguments"] = vault.unmask(safe)
+                        changed = True
         if not changed:
-            return passthrough, token_carry
+            return passthrough, carries
 
         data_line = "data: " + json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
         term = terminator if terminator else b"\n\n"
-        return data_line.encode("utf-8") + term, new_carry
+        return data_line.encode("utf-8") + term, carries

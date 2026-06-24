@@ -262,6 +262,16 @@ def test_backstop_rejects_spoofed_opaque_fields():
         assert secret not in json.dumps(obj), f"leaked via spoof: {obj}"
 
 
+def test_backstop_redacts_secret_sent_as_json_number():
+    # A Luhn-valid card sent as a bare JSON NUMBER (not a string) must not slip
+    # through; a benign number is left as a number.
+    red = Redactor(Vault("s"))
+    obj = {"card": 4242424242424242, "count": 1719230400, "flag": True}
+    red.redact_object(obj)
+    assert "4242424242424242" not in json.dumps(obj)  # card masked
+    assert obj["count"] == 1719230400 and obj["flag"] is True  # benign leaves untouched
+
+
 def test_anthropic_redacts_tool_use_input_args():
     # C3: tool_use.input (shell commands / patches) must be redacted, not forwarded raw.
     body = json.dumps(
@@ -873,6 +883,64 @@ def test_openai_chat_unmask_split_token():
     result = _run(collect())
     assert "secret@example.com" in result
     assert token not in result
+
+
+def test_openai_chat_unmask_tool_call_arguments_split():
+    # H2: a token split across delta.tool_calls[].function.arguments must restore
+    # so the local tool gets the real value, not «TOKEN».
+    v = Vault("s")
+    token = v.token_for("ops@example.com", "EMAIL")
+    h = len(token) // 2
+
+    async def src():
+        yield (
+            'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%s}}]}}]}\n\n'
+            % json.dumps('{"to":"' + token[:h])
+        ).encode()
+        yield (
+            'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%s}}]}}]}\n\n'
+            % json.dumps(token[h:] + '"}')
+        ).encode()
+        yield b"data: [DONE]\n\n"
+
+    async def collect():
+        out = b""
+        async for c in OpenAIChatAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "ops@example.com" in result and token not in result
+
+
+def test_openai_chat_unmask_multi_choice_no_carry_clobber():
+    # M5: two choices each split a DIFFERENT token in the same event — per-target
+    # carry must keep them independent (a shared scalar carry corrupts both).
+    v = Vault("s")
+    t0 = v.token_for("a@x.com", "EMAIL")
+    t1 = v.token_for("b@y.com", "EMAIL")
+    h0, h1 = len(t0) // 2, len(t1) // 2
+
+    async def src():
+        yield (
+            'data: {"choices":[{"index":0,"delta":{"content":%s}},{"index":1,"delta":{"content":%s}}]}\n\n'
+            % (json.dumps("x" + t0[:h0]), json.dumps("y" + t1[:h1]))
+        ).encode()
+        yield (
+            'data: {"choices":[{"index":0,"delta":{"content":%s}},{"index":1,"delta":{"content":%s}}]}\n\n'
+            % (json.dumps(t0[h0:] + "!"), json.dumps(t1[h1:] + "!"))
+        ).encode()
+        yield b"data: [DONE]\n\n"
+
+    async def collect():
+        out = b""
+        async for c in OpenAIChatAdapter().unmask_stream(src(), v):
+            out += c
+        return out.decode("utf-8")
+
+    result = _run(collect())
+    assert "a@x.com" in result and "b@y.com" in result
+    assert t0 not in result and t1 not in result
 
 
 def test_openai_responses_unmask_split_token():

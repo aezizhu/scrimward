@@ -28,6 +28,11 @@ from .detectors import BUILTINS, Detector, Span, detect
 from .vault import Vault
 
 
+# Dict keys whose ``data`` child is raw binary base64 (image/file), not text —
+# the recursive backstop must not run text redaction over them.
+_IMAGE_PARENTS = frozenset({"source", "inlinedata", "inline_data"})
+
+
 @dataclass(frozen=True)
 class _RankedSpan:
     """A detected :class:`Span` tagged with its resolution priority.
@@ -153,6 +158,45 @@ class Redactor:
             return s
 
         return self._splice(s, spans)
+
+    def redact_object(self, obj: object) -> object:
+        """Deny-by-default recursive backstop: redact EVERY string leaf in a
+        JSON-decoded object IN PLACE, except opaque/binary fields.
+
+        Adapters can only hand-enumerate the text fields they know about; a field
+        a provider adds tomorrow (a new tool-call arg, a description, metadata)
+        would otherwise be re-serialized verbatim and leak. This sweep masks any
+        un-enumerated text so the adapter layer is fail-CLOSED by construction.
+        Opaque fields are skipped (they are handled separately or must not be
+        mutated): inline ``data:`` URIs, raw image base64 (``data`` under
+        ``source``/``inlineData``), and ``encrypted_content`` server blobs.
+        """
+        return self._redact_node(obj, key=None, parent_key=None)
+
+    def _is_opaque(self, value: str, key: str | None, parent_key: str | None) -> bool:
+        if value[:5].lower() == "data:":  # any inline image/pdf/audio data URI
+            return True
+        if isinstance(key, str):
+            kl = key.lower()
+            if kl == "encrypted_content":
+                return True
+            if kl == "data" and parent_key in _IMAGE_PARENTS:
+                return True
+        return False
+
+    def _redact_node(self, node: object, key: str | None, parent_key: str | None) -> object:
+        if isinstance(node, str):
+            return node if self._is_opaque(node, key, parent_key) else self.redact_text(node)
+        if isinstance(node, dict):
+            node_key = key.lower() if isinstance(key, str) else None
+            for k in list(node.keys()):
+                node[k] = self._redact_node(node[k], k if isinstance(k, str) else None, node_key)
+            return node
+        if isinstance(node, list):
+            for i in range(len(node)):
+                node[i] = self._redact_node(node[i], None, parent_key)
+            return node
+        return node  # int / float / bool / None — nothing to redact
 
     @staticmethod
     def _normalize(s: str) -> str:

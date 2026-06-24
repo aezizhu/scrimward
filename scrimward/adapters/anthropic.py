@@ -157,6 +157,11 @@ class AnthropicAdapter:
                 )
             data["messages"] = [self._redact_message(m, red) for m in messages]
 
+        # Deny-by-default backstop: redact any text field not hand-enumerated
+        # above (tool_use.input, tools[].description, metadata, …) so a new
+        # provider field cannot silently leak. Opaque/binary fields are skipped.
+        red.redact_object(data)
+
         # Compact, deterministic re-encode (no spaces) — non-ASCII secrets are
         # preserved verbatim (ensure_ascii=False) so token bytes round-trip.
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

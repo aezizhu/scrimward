@@ -74,6 +74,10 @@ class GeminiAdapter:
         else:
             self._redact_envelope(data, red)
 
+        # Deny-by-default backstop: redact any un-enumerated text field
+        # (functionCall.args, functionResponse.response = tool output, …). Routing
+        # IDs (model/project) are non-secret text and pass through unchanged.
+        red.redact_object(data)
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def _redact_envelope(self, env: dict, red: Redactor) -> None:

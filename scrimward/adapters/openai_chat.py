@@ -77,6 +77,9 @@ class OpenAIChatAdapter:
                 if isinstance(fn, dict) and isinstance(fn.get("description"), str):
                     fn["description"] = red.redact_text(fn["description"])
 
+        # Deny-by-default backstop: redact any un-enumerated text field
+        # (tool_calls[].function.arguments, function_call.arguments, …).
+        red.redact_object(data)
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def _redact_content(self, content: object, red: Redactor) -> object:

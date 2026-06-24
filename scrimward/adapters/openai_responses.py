@@ -72,6 +72,9 @@ class OpenAIResponsesAdapter:
             for item in inp:
                 self._redact_item(item, red)
 
+        # Deny-by-default backstop: redact any un-enumerated text field
+        # (function_call.arguments, list-shaped *_call_output.output, …).
+        red.redact_object(data)
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def _redact_item(self, item: object, red: Redactor) -> None:

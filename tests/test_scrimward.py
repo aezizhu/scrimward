@@ -207,6 +207,82 @@ def test_union_merge_deterministic_under_shuffle():
     assert results[0] == results[1] == results[2]
 
 
+# --- C0: deny-by-default recursive backstop — no un-enumerated text leaks -----
+
+
+def test_redact_object_redacts_nested_text_but_keeps_non_secrets():
+    red = Redactor(Vault("s"))
+    obj = {"a": {"b": ["x", "mail secret@example.com please"]}, "model": "gpt-4o"}
+    red.redact_object(obj)
+    assert "secret@example.com" not in json.dumps(obj)
+    assert obj["model"] == "gpt-4o"  # non-secret text preserved
+
+
+def test_redact_object_preserves_opaque_binary_and_encrypted_fields():
+    # The backstop must NOT corrupt image data, data URIs, or opaque server blobs.
+    red = Redactor(Vault("s"), detect_entropy=True)  # entropy on = harshest case
+    obj = {
+        "source": {"type": "base64", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"},
+        "inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUg"},
+        "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANS"},
+        "reasoning": {"encrypted_content": "OPAQUEsk0123456789abcdefBLOBxyz"},
+    }
+    red.redact_object(obj)
+    assert obj["source"]["data"] == "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+    assert obj["inlineData"]["data"] == "iVBORw0KGgoAAAANSUhEUg"
+    assert obj["image_url"]["url"] == "data:image/png;base64,iVBORw0KGgoAAAANS"
+    assert obj["reasoning"]["encrypted_content"] == "OPAQUEsk0123456789abcdefBLOBxyz"
+
+
+def test_anthropic_redacts_tool_use_input_args():
+    # C3: tool_use.input (shell commands / patches) must be redacted, not forwarded raw.
+    body = json.dumps(
+        {"model": "x", "messages": [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "mail ops@secret.example.com"}}]}]}
+    ).encode()
+    out = AnthropicAdapter().redact_request(body, Redactor(Vault("s")))
+    assert b"ops@secret.example.com" not in out
+
+
+def test_anthropic_redacts_tool_description():
+    # C7: tools[].description free text must be redacted.
+    body = json.dumps(
+        {"model": "x", "messages": [{"role": "user", "content": "hi"}],
+         "tools": [{"name": "db", "description": "connects to postgres://u:pw@db.internal/prod"}]}
+    ).encode()
+    out = AnthropicAdapter().redact_request(body, Redactor(Vault("s")))
+    assert b"postgres://u:pw@db.internal" not in out
+
+
+def test_openai_chat_redacts_tool_call_arguments():
+    # C5
+    body = json.dumps(
+        {"model": "x", "messages": [{"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c", "type": "function", "function": {"name": "f", "arguments": '{"to":"leak@secret.example.com"}'}}]}]}
+    ).encode()
+    out = OpenAIChatAdapter().redact_request(body, Redactor(Vault("s")))
+    assert b"leak@secret.example.com" not in out
+
+
+def test_openai_responses_redacts_function_call_arguments():
+    # C4
+    body = json.dumps(
+        {"model": "x", "input": [{"type": "function_call", "name": "f", "arguments": '{"q":"leak@secret.example.com"}'}]}
+    ).encode()
+    out = OpenAIResponsesAdapter().redact_request(body, Redactor(Vault("s")))
+    assert b"leak@secret.example.com" not in out
+
+
+def test_gemini_redacts_function_response_output():
+    # C6: functionResponse.response (tool OUTPUT — highest secret density) must be redacted.
+    body = json.dumps(
+        {"contents": [{"role": "user", "parts": [
+            {"functionResponse": {"name": "f", "response": {"stdout": "found leak@secret.example.com here"}}}]}]}
+    ).encode()
+    out = GeminiAdapter().redact_request(body, Redactor(Vault("s")))
+    assert b"leak@secret.example.com" not in out
+
+
 def test_engine_redacts_and_allowlist():
     out = Redactor(Vault("s")).redact_text("mail alice@example.com")
     assert "alice@example.com" not in out

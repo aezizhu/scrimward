@@ -542,6 +542,66 @@ def test_proxy_canary_e2e_non_streaming_reply():
         mock.stop()
 
 
+# --- H3: cli fail-closed boundary (was entirely untested) ------------------
+
+
+def test_is_routed_requires_matching_url_and_healthz(monkeypatch, tmp_path):
+    from scrimward import cli
+
+    p = tmp_path / "settings.local.json"
+    p.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8788"}}))
+    monkeypatch.setattr(cli, "_healthz", lambda *a, **k: True)
+    assert cli._is_routed(8788, settings_path=p) is True
+    monkeypatch.setattr(cli, "_healthz", lambda *a, **k: False)  # proxy down
+    assert cli._is_routed(8788, settings_path=p) is False  # fail-closed
+    p.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://elsewhere:9"}}))
+    monkeypatch.setattr(cli, "_healthz", lambda *a, **k: True)
+    assert cli._is_routed(8788, settings_path=p) is False  # wrong URL → not routed
+
+
+def test_write_and_restore_base_url_round_trip(tmp_path):
+    from scrimward import cli
+
+    p = tmp_path / "settings.local.json"
+    p.write_text(json.dumps({"env": {"OTHER": "keep"}, "permissions": "x"}))
+    prev = cli._write_base_url("http://127.0.0.1:8788", settings_path=p)
+    assert prev is None  # ANTHROPIC_BASE_URL was unset
+    data = json.loads(p.read_text())
+    assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8788"
+    assert data["env"]["OTHER"] == "keep" and data["permissions"] == "x"  # siblings preserved
+    cli._restore_base_url(prev, settings_path=p)  # prev None → key removed
+    restored = json.loads(p.read_text())
+    assert "ANTHROPIC_BASE_URL" not in restored["env"] and restored["env"]["OTHER"] == "keep"
+
+
+# --- H4: every adapter redacts + routes through the full proxy --------------
+
+
+@pytest.mark.parametrize(
+    "path,body,auth",
+    [
+        ("/v1/messages", {"model": "x", "messages": [{"role": "user", "content": "email CANARY"}]}, ("x-api-key", "k")),
+        ("/v1/chat/completions", {"model": "x", "messages": [{"role": "user", "content": "email CANARY"}]}, ("authorization", "Bearer k")),
+        ("/v1/responses", {"model": "x", "input": "email CANARY"}, ("authorization", "Bearer k")),
+        ("/v1internal:generateContent", {"contents": [{"role": "user", "parts": [{"text": "email CANARY"}]}]}, ("x-goog-api-key", "k")),
+    ],
+)
+def test_proxy_e2e_redacts_and_forwards_auth_for_all_adapters(path, body, auth):
+    mock = _MockUpstream()
+    canary = "alice.secret@example.com"
+    raw = json.dumps(body).replace("CANARY", canary).encode()
+    try:
+        app = create_app(Config(upstream=mock.url))
+        status, _ = _run(_post(app, path, raw, {"content-type": "application/json", auth[0]: auth[1]}))
+        assert status == 200
+        recv = mock.received[0]
+        assert canary.encode() not in recv["body"]  # outbound masked
+        assert _TOKEN_BYTES_RE.search(recv["body"]) is not None  # a token went upstream
+        assert recv["headers"].get(auth[0]) == auth[1]  # auth header forwarded verbatim
+    finally:
+        mock.stop()
+
+
 def test_proxy_fail_closed_on_bad_json():
     mock = _MockUpstream()
     try:

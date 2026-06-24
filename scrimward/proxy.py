@@ -47,6 +47,11 @@ from .vault import Vault, _current_vault, set_current_vault
 # Hop-by-hop headers (RFC 7230 §6.1) plus ``host`` / ``content-length``. These
 # are connection-scoped and must NOT be forwarded to the upstream; httpx sets
 # its own. Auth headers are deliberately NOT in this set — they pass verbatim.
+# Hard cap on a buffered outbound request body (the whole thing is read into RAM
+# and regex-scanned). Over this, the proxy refuses (fail-closed) rather than risk
+# OOM / event-loop stalls. Generous enough for real prompts + pasted files.
+MAX_BODY_BYTES = 32 * 1024 * 1024
+
 HOP_BY_HOP_HEADERS: frozenset[str] = frozenset(
     {
         "connection",
@@ -213,7 +218,25 @@ def create_app(
     @app.post("/{full_path:path}")
     async def proxy(full_path: str, request: Request):
         # --- 1. Buffer the entire body (default-DENY: inspect everything). ---
-        body = await request.body()
+        # Cap it: redaction scans + buffers the whole body in RAM, so an
+        # over-large (or lying) content-length would OOM the proxy. Refuse
+        # (fail-closed 413) rather than forward unscanned. Check the declared
+        # length AND the actual read so a missing/false header can't bypass it.
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            return _blocked(
+                f"request body exceeds the {MAX_BODY_BYTES}-byte cap; refusing (fail-closed)",
+                status_code=413,
+            )
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf.extend(chunk)
+            if len(buf) > MAX_BODY_BYTES:
+                return _blocked(
+                    f"request body exceeds the {MAX_BODY_BYTES}-byte cap; refusing (fail-closed)",
+                    status_code=413,
+                )
+        body = bytes(buf)
         # Reconstruct the path-with-leading-slash + query so adapters and the
         # upstream URL see exactly what the tool requested.
         path = request.url.path

@@ -614,6 +614,22 @@ def test_proxy_e2e_redacts_and_forwards_auth_for_all_adapters(path, body, auth):
         mock.stop()
 
 
+def test_proxy_blocks_oversized_body(monkeypatch):
+    # M20: an over-large body must be refused (fail-closed) before forwarding.
+    import scrimward.proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod, "MAX_BODY_BYTES", 50)
+    mock = _MockUpstream()
+    try:
+        app = create_app(Config(upstream=mock.url))
+        big = json.dumps({"model": "x", "messages": [{"role": "user", "content": "x" * 300}]}).encode()
+        status, _ = _run(_post(app, "/v1/messages", big, {"content-type": "application/json"}))
+        assert status >= 400  # blocked
+        assert len(mock.received) == 0  # nothing forwarded
+    finally:
+        mock.stop()
+
+
 def test_proxy_fail_closed_on_bad_json():
     mock = _MockUpstream()
     try:

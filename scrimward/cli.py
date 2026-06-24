@@ -61,12 +61,13 @@ WRAP_TOOLS: dict[str, dict] = {
         "write_claude_settings": False,
     },
     "gemini": {
-        # API-key mode (GOOGLE_GEMINI_BASE_URL → generativelanguage). The default
-        # "Login with Google" mode routes through Cloud Code Assist and needs
-        # CODE_ASSIST_ENDPOINT instead — see docs/integrations/gemini-cli.md.
+        # API-key mode uses GOOGLE_GEMINI_BASE_URL → generativelanguage; the
+        # default "Login with Google" mode routes through Cloud Code Assist and
+        # honors CODE_ASSIST_ENDPOINT, so set BOTH to route either path.
         "port": DEFAULT_PORT + 2,
         "upstream": "https://generativelanguage.googleapis.com",
         "env": "GOOGLE_GEMINI_BASE_URL",
+        "extra_base_env": ("CODE_ASSIST_ENDPOINT",),
         "base_suffix": "",
         "write_claude_settings": False,
     },
@@ -111,13 +112,26 @@ def wrap_cmd(tool: str, port: int | None, tool_args: tuple[str, ...]) -> None:
 
     env = os.environ.copy()
     env[spec["env"]] = base_url
+    for extra in spec.get("extra_base_env", ()):
+        env[extra] = base_url
     previous = None
     if spec["write_claude_settings"]:
         previous = _write_base_url(f"http://{DEFAULT_HOST}:{port}")
 
     binary = shutil.which(tool) or tool
+    # Be HONEST about enforcement. Only Claude Code has the fail-closed PreToolUse
+    # guard (it runs scrimward's plugin), so only there can we promise fail-closed.
+    # Other tools are routed via env vars the tool MAY ignore in OAuth/login mode —
+    # claiming "fail-closed" there would be a false guarantee.
+    if spec["write_claude_settings"]:
+        note = "fail-closed: the PreToolUse guard blocks tool use until routing is verified"
+    else:
+        note = (
+            "API-key mode; if this tool uses OAuth/login it may bypass the proxy — "
+            "confirm with `scrimward status` and watch the proxy log for traffic"
+        )
     click.echo(
-        f"scrimward: routing {tool} via {spec['env']}={base_url} -> {spec['upstream']} (fail-closed)",
+        f"scrimward: routing {tool} via {spec['env']}={base_url} -> {spec['upstream']} ({note})",
         err=True,
     )
     try:
